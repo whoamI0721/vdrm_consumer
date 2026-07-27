@@ -119,9 +119,9 @@ public class VirtualKeyboardView extends View {
         int gap = KEY_GAP;
         int rows = KEYS.length;
 
-        /* Target: use most of screen width, keep 1288:564 aspect ratio */
-        int targetW = (int)(parentW * 0.92f);
-        int targetH = (int)(targetW * 564f / 1288f);
+        /* Size: 1/2 screen width, 2/5 screen height */
+        int targetW = parentW / 2;
+        int targetH = parentH * 2 / 5;
 
         keyH = (targetH - 10 - (rows - 1) * gap) / rows;
         if (keyH < 50) keyH = 50;
