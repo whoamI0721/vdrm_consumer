@@ -116,24 +116,12 @@ public class VirtualKeyboardView extends View {
     @Override
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
         int parentW = MeasureSpec.getSize(widthMeasureSpec);
-        int parentH = MeasureSpec.getSize(heightMeasureSpec);
         int gap = KEY_GAP;
         int rows = KEYS.length;
 
-        /* Keyboard proportion: 1288:564, ~53.7% screen width, ~44.7% screen height */
-        int targetW = (int)(parentW * 1288f / 2399f);
-        int targetH = (int)(parentH * 564f / 1263f);
-
-        /* Ensure 1288:564 aspect ratio */
-        float ratio = 1288f / 564f;
-        int fromW = targetW;
-        int fromH = (int)(targetW / ratio);
-        if (fromH > targetH) {
-            fromH = targetH;
-            fromW = (int)(targetH * ratio);
-        }
-        targetW = fromW;
-        targetH = fromH;
+        /* Target: use most of screen width, keep 1288:564 aspect ratio */
+        int targetW = (int)(parentW * 0.92f);
+        int targetH = (int)(targetW * 564f / 1288f);
 
         keyH = (targetH - 10 - (rows - 1) * gap) / rows;
         if (keyH < 50) keyH = 50;
@@ -163,15 +151,24 @@ public class VirtualKeyboardView extends View {
 
         int gap = KEY_GAP;
         for (int r = 0; r < KEYS.length; r++) {
-            int x = 0;
             int y = 10 + r * (keyH + gap);
             int kw = rowKeyWidth[r];
             int ww = rowWideWidth[r];
 
+            /* Calculate actual row width and center it */
+            int rowW = 0;
             for (int i = 0; i < KEYS[r].length; i += 4) {
                 String label = KEYS[r][i];
                 if (label == null) continue;
-                String code = KEYS[r][i + 1];
+                rowW += (label.length() > 3 ? ww : kw) + gap;
+            }
+            rowW -= gap;
+            int startX = (w - rowW) / 2;
+            int x = startX;
+
+            for (int i = 0; i < KEYS[r].length; i += 4) {
+                String label = KEYS[r][i];
+                if (label == null) continue;
                 String shiftLabel = KEYS[r][i + 2];
                 int c = i / 4;
 
@@ -192,22 +189,22 @@ public class VirtualKeyboardView extends View {
                 }
 
                 /* Main label */
-                float mainSize = isWide ? 22 : Math.min(24, kw * 0.42f);
+                float mainSize = isWide ? 32 : Math.min(40, kw * 0.45f);
                 textPaint.setTextSize(mainSize);
                 canvas.drawText(display, rect.centerX(), rect.centerY() + mainSize * 0.35f, textPaint);
 
                 /* Shift hint (small text at bottom) */
                 if (shiftLabel != null && !isFnKey) {
-                    float hintSize = Math.min(13, kw * 0.22f);
+                    float hintSize = Math.min(20, kw * 0.24f);
                     textPaint.setTextSize(hintSize);
-                    canvas.drawText(shiftLabel, rect.centerX(), rect.bottom - 3, textPaint);
+                    canvas.drawText(shiftLabel, rect.centerX(), rect.bottom - 4, textPaint);
                 }
 
-                /* Fn hint (small text at bottom-left area for number row) */
+                /* Fn hint at top */
                 if (r == 0 && !fnMode && c * 2 < FN_ROW0.length && FN_ROW0[c * 2] != null) {
-                    float fnSize = Math.min(11, kw * 0.2f);
+                    float fnSize = Math.min(18, kw * 0.22f);
                     textPaint.setTextSize(fnSize);
-                    canvas.drawText(FN_ROW0[c * 2], rect.centerX(), rect.top + fnSize + 2, textPaint);
+                    canvas.drawText(FN_ROW0[c * 2], rect.centerX(), rect.top + fnSize + 3, textPaint);
                 }
 
                 x += kx + gap;
@@ -235,11 +232,21 @@ public class VirtualKeyboardView extends View {
         if (r < 0 || r >= KEYS.length) return true;
 
         int cx = (int)x;
-        int c = -1, xPos = 0;
+        /* Calculate startX for this row (same as onDraw) */
+        int rowW = 0, kw0 = rowKeyWidth[r], ww0 = rowWideWidth[r];
         for (int i = 0; i < KEYS[r].length; i += 4) {
             String label = KEYS[r][i];
             if (label == null) continue;
-            int kw = label.length() > 3 ? rowWideWidth[r] : rowKeyWidth[r];
+            rowW += (label.length() > 3 ? ww0 : kw0) + KEY_GAP;
+        }
+        rowW -= KEY_GAP;
+        int startX = (getWidth() - rowW) / 2;
+
+        int c = -1, xPos = startX;
+        for (int i = 0; i < KEYS[r].length; i += 4) {
+            String label = KEYS[r][i];
+            if (label == null) continue;
+            int kw = label.length() > 3 ? ww0 : kw0;
             if (cx >= xPos && cx < xPos + kw) { c = i / 4; break; }
             xPos += kw + KEY_GAP;
         }
