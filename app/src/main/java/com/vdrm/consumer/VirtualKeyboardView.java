@@ -116,6 +116,7 @@ public class VirtualKeyboardView extends View {
     @Override
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
         int parentW = MeasureSpec.getSize(widthMeasureSpec);
+        int parentH = MeasureSpec.getSize(heightMeasureSpec);
         int gap = KEY_GAP;
         int rows = KEYS.length;
 
