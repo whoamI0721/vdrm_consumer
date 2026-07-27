@@ -11,7 +11,7 @@ import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
 import android.view.WindowManager;
-import android.widget.ImageButton;
+import android.widget.Button;
 import android.widget.RelativeLayout;
 
 public class MainActivity extends Activity implements SurfaceHolder.Callback {
@@ -81,7 +81,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         root.addView(touchOverlay);
 
         /* Keyboard toggle button */
-        ImageButton kbBtn = new ImageButton(this);
+        Button kbBtn = new Button(this);
         kbBtn.setText("⌨");
         kbBtn.setTextSize(20);
         kbBtn.setBackgroundColor(0x60000000);
@@ -245,7 +245,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             case KeyEvent.KEYCODE_PAGE_UP: return 104;
             case KeyEvent.KEYCODE_PAGE_DOWN: return 109;
             case KeyEvent.KEYCODE_HOME: return 102;
-            case KeyEvent.KEYCODE_END: return 107;
+            case KeyEvent.KEYCODE_MOVE_END: return 107;
             case KeyEvent.KEYCODE_INSERT: return 110;
             case KeyEvent.KEYCODE_F1: return 59;
             case KeyEvent.KEYCODE_F2: return 60;
