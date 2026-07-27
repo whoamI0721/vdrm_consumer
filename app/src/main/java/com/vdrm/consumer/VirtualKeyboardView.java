@@ -19,19 +19,40 @@ public class VirtualKeyboardView extends View {
     private int pressedKey = -1;
     private boolean fnMode = false;
 
-    /* key label, linux keycode, fn-label, fn-keycode */
+    /* [label, code, fnLabel?, fnCode?, label, code, ...] */
+    /* labels >3 chars get 120px width */
     private static final String[][] KEYS = {
-        {"Esc", "1",   null,  null,   "Tab", "15",  "Ctrl","29",  "Alt", "56",  "Super","125",  "←", "105", "↑", "103", "→", "106", "↓", "108"},
-        {"`",   "41",  "F1",  "59",   "1",   "2",    "F2",  "60",  "2",   "3",   "F3",  "61",   "3",  "4",   "F4", "62",  "4",  "5",   "F5", "63"},
-        {"5",   "6",   "F6",  "64",   "6",   "7",    "F7",  "65",  "7",   "8",   "F8",  "66",   "8",  "9",   "F9", "67",  "9",  "10",  "F10","68"},
-        {"0",   "11",  "F11", "87",   "-",   "12",   "=",   "13",  "BS",  "14",  null,  null,   null, null,  null, null,  null, null,  null, null},
-        {"q",   "16",  "w",   "17",   "e",   "18",   "r",   "19",  "t",   "20",  "y",   "21",   "u",  "22",  "i",  "23",  "o",  "24",  "p",  "25"},
-        {"[",   "26",  "]",   "27",   "\\",  "43",   "Del", "111", null,  null,  null,  null,   null, null,  null, null,  null, null,  null, null},
-        {"Caps","58",  "a",   "30",   "s",   "31",   "d",   "32",  "f",   "33",  "g",   "34",   "h",  "35",  "j",  "36",  "k",  "37",  "l",  "38"},
-        {";",   "39",  "'",   "40",   "Ent", "28",   null,  null,  null,  null,  null,  null,   null, null,  null, null,  null, null,  null, null},
-        {"Shft","42",  "z",   "44",   "x",   "45",   "c",   "46",  "v",   "47",  "b",   "48",   "n",  "49",  "m",  "50",  ",",  "51",  ".",  "52"},
-        {"/",   "53",  "Shft","42",   null,  null,   null,  null,  null,  null,  null,  null,   null, null,  null, null,  null, null,  null, null},
-        {"Ctrl","29",  "Super","125","Alt",  "56",   "      Space      ", "57", "Alt","56","Fn","--","Hide","--", null, null, null, null, null, null},
+        /* Row 0: function row (14 keys) */
+        {"Esc","1",  "F1","59",  "F2","60",  "F3","61",  "F4","62",
+         "F5","63",  "F6","64",  "F7","65",  "F8","66",  "F9","67",
+         "F10","68", "F11","87", "F12","88", "Hide","--"},
+
+        /* Row 1: number row (14 keys) */
+        {"`","41",  "1","2",  "2","3",  "3","4",  "4","5",
+         "5","6",  "6","7",  "7","8",  "8","9",  "9","10",
+         "0","11",  "-","12",  "=","13",  "Backspace","14"},
+
+        /* Row 2: q row (14 keys) */
+        {"Tab","15",  "q","16",  "w","17",  "e","18",  "r","19",
+         "t","20",  "y","21",  "u","22",  "i","23",  "o","24",
+         "p","25",  "[","26",  "]","27",  "\\","43"},
+
+        /* Row 3: a row (13 keys) */
+        {"Caps","58",  "a","30",  "s","31",  "d","32",  "f","33",
+         "g","34",  "h","35",  "j","36",  "k","37",  "l","38",
+         ";","39",  "'","40",  "Enter","28"},
+
+        /* Row 4: z row (13 keys) */
+        {"Shift","42",  "z","44",  "x","45",  "c","46",  "v","47",
+         "b","48",  "n","49",  "m","50",  ",","51",  ".","52",
+         "/","53",  "Shift","42"},
+
+        /* Row 5: bottom row (11 keys) */
+        {"Ctrl","29",  "Super","125",  "Alt","56",
+         "     Space     ","57",
+         "Alt","56",  "Fn","-1",
+         "←","105","↓","108","↑","103","→","106",
+         "✕","--"},
     };
 
     public VirtualKeyboardView(Context context) {
@@ -61,13 +82,12 @@ public class VirtualKeyboardView extends View {
 
         int startY = 10;
         for (int r = 0; r < KEYS.length; r++) {
-            int colsOnRow = KEYS[r].length / 2;
             int rowW = 0;
+            int colsOnRow = KEYS[r].length / 2;
             for (int c = 0; c < colsOnRow; c++) {
                 String label = KEYS[r][c * 2];
                 if (label == null) continue;
-                int kw = label.length() > 3 ? 120 : KEY_W;
-                rowW += kw + KEY_GAP;
+                rowW += (label.length() > 3 ? 120 : KEY_W) + KEY_GAP;
             }
             int startX = (getWidth() - rowW) / 2;
             int x = startX;
@@ -77,28 +97,32 @@ public class VirtualKeyboardView extends View {
                 String label = KEYS[r][c * 2];
                 if (label == null) continue;
                 int kw = label.length() > 3 ? 120 : KEY_W;
-                String codeStr = KEYS[r][c * 2 + 1];
+                String code = KEYS[r][c * 2 + 1];
+                boolean hasFn = KEYS[r].length > c * 2 + 2;
                 int idx = r * COLS + c;
 
                 RectF rect = new RectF(x, y, x + kw, y + KEY_H);
                 canvas.drawRoundRect(rect, 4, 4, idx == pressedKey ? pressPaint : keyPaint);
 
-                String display = fnMode ? codeStr : label;
-                boolean hasFn = KEYS[r].length > c * 2 + 2 && KEYS[r][c * 2 + 2] != null;
-                if (hasFn) {
+                String display = label;
+                if (hasFn && fnMode) {
+                    display = KEYS[r][c * 2 + 2];
+                }
+                canvas.drawText(display, rect.centerX(), rect.centerY() + 6, textPaint);
+
+                if (hasFn && !fnMode) {
                     String fnLabel = KEYS[r][c * 2 + 2];
-                    canvas.drawText(fnMode ? fnLabel : label, rect.centerX(), rect.centerY() + 6, textPaint);
-                    if (!fnMode) {
-                        textPaint.setTextSize(12);
-                        canvas.drawText(fnLabel, rect.centerX(), rect.bottom - 4, textPaint);
-                        textPaint.setTextSize(18);
-                    }
-                } else {
-                    canvas.drawText(label, rect.centerX(), rect.centerY() + 6, textPaint);
+                    textPaint.setTextSize(11);
+                    canvas.drawText(fnLabel, rect.centerX(), rect.bottom - 3, textPaint);
+                    textPaint.setTextSize(18);
                 }
                 x += kw + KEY_GAP;
             }
         }
+    }
+
+    private static boolean isSpecial(String code) {
+        return code.equals("--") || code.equals("-1");
     }
 
     @Override
@@ -123,7 +147,6 @@ public class VirtualKeyboardView extends View {
             xPos += kw + KEY_GAP;
         }
         if (c >= colsOnRow) return true;
-        String label = KEYS[r][c * 2];
         String codeStr = KEYS[r][c * 2 + 1];
 
         switch (action) {
@@ -131,19 +154,20 @@ public class VirtualKeyboardView extends View {
             case MotionEvent.ACTION_MOVE: {
                 int newIdx = r * COLS + c;
                 if (newIdx != pressedKey) {
+                    /* release previous key */
                     if (pressedKey >= 0) {
                         int pr = pressedKey / COLS;
                         int pc = pressedKey % COLS;
                         if (pc * 2 < KEYS[pr].length && KEYS[pr][pc * 2] != null) {
                             String oldCode = KEYS[pr][pc * 2 + 1];
-                            if (!oldCode.equals("--") && !oldCode.equals("57") && !oldCode.equals("Fn")) {
+                            if (!isSpecial(oldCode) && !oldCode.equals("57")) {
                                 Native.nativeSendKey(Integer.parseInt(oldCode), false);
                             }
                         }
                     }
                     pressedKey = newIdx;
-                    if (codeStr.equals("Fn")) continue;
-                    if (!codeStr.equals("--") && !codeStr.equals("57")) {
+                    /* press new key */
+                    if (!isSpecial(codeStr) && !codeStr.equals("57")) {
                         Native.nativeSendKey(Integer.parseInt(codeStr), true);
                     }
                     invalidate();
@@ -155,16 +179,13 @@ public class VirtualKeyboardView extends View {
                     int pr = pressedKey / COLS;
                     int pc = pressedKey % COLS;
                     if (pc * 2 < KEYS[pr].length) {
-                        String labelUp = KEYS[pr][pc * 2];
                         String upCode = KEYS[pr][pc * 2 + 1];
                         if (upCode.equals("--") && pressedKey == r * COLS + c) {
                             setVisibility(GONE);
-                        }
-                        if (!upCode.equals("--") && !upCode.equals("57") && !upCode.equals("Fn")) {
-                            Native.nativeSendKey(Integer.parseInt(upCode), false);
-                        }
-                        if (labelUp != null && labelUp.equals("Fn")) {
+                        } else if (upCode.equals("-1")) {
                             fnMode = !fnMode;
+                        } else if (!upCode.equals("57")) {
+                            Native.nativeSendKey(Integer.parseInt(upCode), false);
                         }
                     }
                 }
