@@ -1,14 +1,9 @@
 package com.vdrm.consumer;
 
 import android.app.Activity;
-import android.app.Notification;
-import android.app.NotificationChannel;
-import android.app.NotificationManager;
-import android.app.Service;
 import android.content.Intent;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.IBinder;
 import android.os.PowerManager;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
@@ -20,9 +15,6 @@ import android.widget.ImageButton;
 import android.widget.RelativeLayout;
 
 public class MainActivity extends Activity implements SurfaceHolder.Callback {
-
-    private static final String CHANNEL_ID = "vdrm_foreground";
-    private static final int NOTIF_ID = 1001;
 
     private SurfaceView surfaceView;
     private VirtualTouchpad touchpad;
@@ -283,26 +275,19 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         }
     }
 
-    /* ---- Foreground Service (embedded) ---- */
+    /* ---- Foreground Service ---- */
 
     private void startForegroundService() {
-        NotificationChannel channel = new NotificationChannel(
-                CHANNEL_ID, "VDRM", NotificationManager.IMPORTANCE_LOW);
-        getSystemService(NotificationManager.class).createNotificationChannel(channel);
-
-        Notification notif = new Notification.Builder(this, CHANNEL_ID)
-                .setContentTitle("VDRM")
-                .setContentText("Desktop consumer running")
-                .setSmallIcon(android.R.drawable.ic_menu_manage)
-                .setOngoing(true)
-                .build();
-
-        startForeground(NOTIF_ID, notif);
+        Intent intent = new Intent(this, ForegroundService.class);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent);
+        } else {
+            startService(intent);
+        }
     }
 
     private void stopForegroundService() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            stopForeground(STOP_FOREGROUND_REMOVE);
-        }
+        Intent intent = new Intent(this, ForegroundService.class);
+        stopService(intent);
     }
 }

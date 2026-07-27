@@ -7,6 +7,7 @@
 #include <jni.h>
 #include <poll.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
