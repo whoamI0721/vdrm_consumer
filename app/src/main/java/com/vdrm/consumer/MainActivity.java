@@ -12,7 +12,6 @@ import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
 import android.view.WindowManager;
-import android.widget.Button;
 import android.widget.RelativeLayout;
 
 public class MainActivity extends Activity implements SurfaceHolder.Callback {
@@ -22,6 +21,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private VirtualKeyboardView keyboardView;
     private long nativeHandle;
     private PowerManager.WakeLock wakeLock;
+    private long lastBackTime;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -82,18 +82,6 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 RelativeLayout.LayoutParams.MATCH_PARENT));
         root.addView(touchOverlay);
 
-        /* Keyboard toggle button */
-        Button kbBtn = new Button(this);
-        kbBtn.setText("⌨");
-        kbBtn.setTextSize(20);
-        kbBtn.setBackgroundColor(0x60000000);
-        RelativeLayout.LayoutParams kbBtnLp = new RelativeLayout.LayoutParams(80, 80);
-        kbBtnLp.addRule(RelativeLayout.ALIGN_PARENT_TOP);
-        kbBtnLp.addRule(RelativeLayout.ALIGN_PARENT_RIGHT);
-        kbBtnLp.setMargins(0, 40, 20, 0);
-        kbBtn.setLayoutParams(kbBtnLp);
-        root.addView(kbBtn);
-
         /* Virtual keyboard View — hidden by default */
         keyboardView = new VirtualKeyboardView(this);
         keyboardView.setVisibility(View.GONE);
@@ -103,11 +91,6 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         kvLp.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
         keyboardView.setLayoutParams(kvLp);
         root.addView(keyboardView);
-
-        kbBtn.setOnClickListener(v -> {
-            keyboardView.setVisibility(
-                keyboardView.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
-        });
 
         setContentView(root);
 
@@ -154,7 +137,14 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             return true;
         }
         if (keyCode == KeyEvent.KEYCODE_BACK) {
-            Native.nativeSendKey(1, true);  /* KEY_ESC */
+            long now = System.currentTimeMillis();
+            if (now - lastBackTime < 500) {
+                finish();
+                return true;
+            }
+            lastBackTime = now;
+            keyboardView.setVisibility(
+                keyboardView.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
             return true;
         }
         int lc = linuxKeyCode(keyCode);
@@ -176,7 +166,6 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             return true;
         }
         if (keyCode == KeyEvent.KEYCODE_BACK) {
-            Native.nativeSendKey(1, false);
             return true;
         }
         int lc = linuxKeyCode(keyCode);
@@ -246,7 +235,6 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             case KeyEvent.KEYCODE_DPAD_RIGHT: return 106;
             case KeyEvent.KEYCODE_PAGE_UP: return 104;
             case KeyEvent.KEYCODE_PAGE_DOWN: return 109;
-            case KeyEvent.KEYCODE_HOME: return 102;
             case KeyEvent.KEYCODE_MOVE_END: return 107;
             case KeyEvent.KEYCODE_INSERT: return 110;
             case KeyEvent.KEYCODE_F1: return 59;
