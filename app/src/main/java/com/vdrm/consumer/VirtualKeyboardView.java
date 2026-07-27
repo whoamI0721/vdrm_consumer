@@ -120,8 +120,8 @@ public class VirtualKeyboardView extends View {
         int gap = KEY_GAP;
         int rows = KEYS.length;
 
-        /* Size: long edge 2/5 screen, short edge 1/2 screen */
-        int targetW = parentW * 2 / 5;
+        /* Size: 4/5 screen width, 1/2 screen height */
+        int targetW = parentW * 4 / 5;
         int targetH = parentH * 1 / 2;
 
         keyH = (targetH - 10 - (rows - 1) * gap) / rows;
@@ -190,13 +190,13 @@ public class VirtualKeyboardView extends View {
                 }
 
                 /* Main label */
-                float mainSize = isWide ? 32 : Math.min(40, kw * 0.45f);
+                float mainSize = isWide ? 36 : Math.min(48, kw * 0.58f);
                 textPaint.setTextSize(mainSize);
                 canvas.drawText(display, rect.centerX(), rect.centerY() + mainSize * 0.35f, textPaint);
 
                 /* Fn hint at top */
                 if (r == 0 && !fnMode && c * 2 < FN_ROW0.length && FN_ROW0[c * 2] != null) {
-                    float fnSize = Math.min(18, kw * 0.22f);
+                    float fnSize = Math.min(22, kw * 0.28f);
                     textPaint.setTextSize(fnSize);
                     canvas.drawText(FN_ROW0[c * 2], rect.centerX(), rect.top + fnSize + 3, textPaint);
                 }
