@@ -193,13 +193,6 @@ public class VirtualKeyboardView extends View {
                 textPaint.setTextSize(mainSize);
                 canvas.drawText(display, rect.centerX(), rect.centerY() + mainSize * 0.35f, textPaint);
 
-                /* Shift hint (small text at bottom) */
-                if (shiftLabel != null && !isFnKey) {
-                    float hintSize = Math.min(20, kw * 0.24f);
-                    textPaint.setTextSize(hintSize);
-                    canvas.drawText(shiftLabel, rect.centerX(), rect.bottom - 4, textPaint);
-                }
-
                 /* Fn hint at top */
                 if (r == 0 && !fnMode && c * 2 < FN_ROW0.length && FN_ROW0[c * 2] != null) {
                     float fnSize = Math.min(18, kw * 0.22f);
