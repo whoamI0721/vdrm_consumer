@@ -2,6 +2,7 @@ package com.vdrm.consumer;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.PowerManager;
@@ -53,6 +54,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         }
 
         /* Foreground notification (prevents Android from killing us) */
+        requestNotificationPermission();
         startForegroundService();
 
         /* Layout: surface + keyboard overlay */
@@ -275,14 +277,46 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         }
     }
 
+    /* ---- Notification Permission ---- */
+
+    private void requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                    != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(
+                    new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 1001);
+            }
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions,
+                                           int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == 1001 && grantResults.length > 0
+                && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+            startForegroundService();
+        }
+    }
+
     /* ---- Foreground Service ---- */
 
     private void startForegroundService() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                    != PackageManager.PERMISSION_GRANTED) {
+                return;  /* notification not granted, skip foreground service */
+            }
+        }
         Intent intent = new Intent(this, ForegroundService.class);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent);
-        } else {
-            startService(intent);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent);
+            } else {
+                startService(intent);
+            }
+        } catch (Exception e) {
+            /* foreground service start failed — continue without it */
         }
     }
 

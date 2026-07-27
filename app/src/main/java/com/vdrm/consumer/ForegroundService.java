@@ -27,7 +27,11 @@ public class ForegroundService extends Service {
                 .setOngoing(true)
                 .build();
 
-        startForeground(NOTIF_ID, notif);
+        try {
+            startForeground(NOTIF_ID, notif);
+        } catch (Exception e) {
+            stopSelf();
+        }
     }
 
     @Override
