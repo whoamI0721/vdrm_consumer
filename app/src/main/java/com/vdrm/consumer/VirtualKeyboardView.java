@@ -115,13 +115,25 @@ public class VirtualKeyboardView extends View {
 
     @Override
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
-        int w = MeasureSpec.getSize(widthMeasureSpec);
+        int parentW = MeasureSpec.getSize(widthMeasureSpec);
+        int parentH = MeasureSpec.getSize(heightMeasureSpec);
         int gap = KEY_GAP;
         int rows = KEYS.length;
 
-        /* Target height ~ width * 565/1288, capped at 650 */
-        int targetH = (int)(w * 565f / 1288f);
-        if (targetH > 650) targetH = 650;
+        /* Keyboard proportion: 1288:564, ~53.7% screen width, ~44.7% screen height */
+        int targetW = (int)(parentW * 1288f / 2399f);
+        int targetH = (int)(parentH * 564f / 1263f);
+
+        /* Ensure 1288:564 aspect ratio */
+        float ratio = 1288f / 564f;
+        int fromW = targetW;
+        int fromH = (int)(targetW / ratio);
+        if (fromH > targetH) {
+            fromH = targetH;
+            fromW = (int)(targetH * ratio);
+        }
+        targetW = fromW;
+        targetH = fromH;
 
         keyH = (targetH - 10 - (rows - 1) * gap) / rows;
         if (keyH < 50) keyH = 50;
@@ -132,7 +144,7 @@ public class VirtualKeyboardView extends View {
         for (int r = 0; r < rows; r++) {
             int n = rowKeyCount[r] - rowWideCount[r];
             int wc = rowWideCount[r];
-            int avail = w - (rowKeyCount[r] - 1) * gap;
+            int avail = targetW - (rowKeyCount[r] - 1) * gap;
             int totalU = n + wc * 2;
             int unit = avail / totalU;
             rowKeyWidth[r] = unit;
@@ -140,7 +152,7 @@ public class VirtualKeyboardView extends View {
         }
         totalH = 10 + rows * keyH + (rows - 1) * gap;
 
-        setMeasuredDimension(w, totalH);
+        setMeasuredDimension(targetW, totalH);
     }
 
     @Override

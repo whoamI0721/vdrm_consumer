@@ -86,8 +86,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         keyboardView = new VirtualKeyboardView(this);
         keyboardView.setVisibility(View.GONE);
         RelativeLayout.LayoutParams kvLp = new RelativeLayout.LayoutParams(
-                RelativeLayout.LayoutParams.MATCH_PARENT,
+                RelativeLayout.LayoutParams.WRAP_CONTENT,
                 RelativeLayout.LayoutParams.WRAP_CONTENT);
+        kvLp.addRule(RelativeLayout.CENTER_HORIZONTAL);
         kvLp.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
         keyboardView.setLayoutParams(kvLp);
         root.addView(keyboardView);
