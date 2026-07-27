@@ -4,6 +4,7 @@
 #include <aaudio/AAudio.h>
 #include <dlfcn.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <jni.h>
 #include <poll.h>
 #include <pthread.h>
@@ -217,7 +218,7 @@ static void *render_loop(void *arg)
 
         int ret = vdrm_present(idx);
         if (ret < 0) {
-            if (ret == -ERESTARTSYS) {
+            if (ret == -EINTR) {
                 LOGI("present interrupted by signal");
                 c->running = false;
             }
