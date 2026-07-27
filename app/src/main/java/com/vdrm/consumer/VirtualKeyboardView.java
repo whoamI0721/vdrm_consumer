@@ -10,47 +10,62 @@ import android.view.View;
 
 public class VirtualKeyboardView extends View {
 
-    private static final int KEY_W = 54;
-    private static final int KEY_H = 44;
-    private static final int KEY_GAP = 2;
-    private static final int COLS = 15;
-
     private Paint bgPaint, keyPaint, textPaint, pressPaint;
     private int pressedKey = -1;
     private boolean fnMode = false;
     private boolean shiftMode = false;
 
-    /* [label, code, shiftLabel?, shiftCode?, ...] — shiftLabel only for symbol keys */
+    private int[] rowKeyCount;
+    private int[] rowWideCount;
+    private int[] rowKeyWidth;
+    private int[] rowWideWidth;
+    private int keyH;
+    private int totalH;
+
+    /* [label, code, shiftLabel or null, shiftCode or null] */
     private static final String[][] KEYS = {
         /* Row 0: number/symbol row */
         {"`","41","~","41",  "1","2","!","2",  "2","3","@","3",
          "3","4","#","4",  "4","5","$","5",  "5","6","%","6",
          "6","7","^","7",  "7","8","&","8",  "8","9","*","9",
          "9","10","(","10",  "0","11",")","11",
-         "-","12","_","12",  "=","13","+","13",  "Backspace","14"},
+         "-","12","_","12",  "=","13","+","13",
+         "Backspace","14",null,null},
 
         /* Row 1: q row */
-        {"Tab","15",  "q","16",  "w","17",  "e","18",  "r","19",
-         "t","20",  "y","21",  "u","22",  "i","23",  "o","24",
-         "p","25",  "[","26","{","26",  "]","27","}","27",
-         "\\","43","|","43"},
+        {"Tab","15",null,null,  "q","16",null,null,
+         "w","17",null,null,  "e","18",null,null,
+         "r","19",null,null,  "t","20",null,null,
+         "y","21",null,null,  "u","22",null,null,
+         "i","23",null,null,  "o","24",null,null,
+         "p","25",null,null,  "[","26","{","26",
+         "]","27","}","27",  "\\","43","|","43"},
 
         /* Row 2: a row */
-        {"Caps","58",  "a","30",  "s","31",  "d","32",  "f","33",
-         "g","34",  "h","35",  "j","36",  "k","37",  "l","38",
-         ";","39",":","39",  "'","40","\"","40",  "Enter","28"},
+        {"Caps","58",null,null,  "a","30",null,null,
+         "s","31",null,null,  "d","32",null,null,
+         "f","33",null,null,  "g","34",null,null,
+         "h","35",null,null,  "j","36",null,null,
+         "k","37",null,null,  "l","38",null,null,
+         ";","39",":","39",  "'","40","\"","40",
+         "Enter","28",null,null},
 
         /* Row 3: z row */
-        {"Shift","-2",  "z","44",  "x","45",  "c","46",  "v","47",
-         "b","48",  "n","49",  "m","50",
-         ",","51","<","51",  ".","52",">","52",  "/","53","?","53",
-         "Shift","-2"},
+        {"Shift","-2",null,null,  "z","44",null,null,
+         "x","45",null,null,  "c","46",null,null,
+         "v","47",null,null,  "b","48",null,null,
+         "n","49",null,null,  "m","50",null,null,
+         ",","51","<","51",  ".","52",">","52",
+         "/","53","?","53",  "Shift","-2",null,null},
 
         /* Row 4: bottom row */
-        {"Ctrl","29",  "Super","125",  "Alt","56",
-         "     Space     ","57",
-         "Alt","56",  "Fn","-1"},
+        {"Ctrl","29",null,null,  "Super","125",null,null,
+         "Alt","56",null,null,
+         "     Space     ","57",null,null,
+         "Alt","56",null,null,  "Fn","-1",null,null},
     };
+
+    private static final int KEY_GAP = 3;
 
     /* Fn mapping for row 0 (label,code pairs; null for no mapping) */
     private static final String[] FN_ROW0 = {
@@ -75,55 +90,115 @@ public class VirtualKeyboardView extends View {
 
         textPaint = new Paint();
         textPaint.setColor(Color.WHITE);
-        textPaint.setTextSize(18);
         textPaint.setTextAlign(Paint.Align.CENTER);
         textPaint.setAntiAlias(true);
+
+        initRowData();
+    }
+
+    private void initRowData() {
+        int rows = KEYS.length;
+        rowKeyCount = new int[rows];
+        rowWideCount = new int[rows];
+        for (int r = 0; r < rows; r++) {
+            int n = 0, w = 0;
+            for (int i = 0; i < KEYS[r].length; i += 4) {
+                String label = KEYS[r][i];
+                if (label == null) continue;
+                n++;
+                if (label.length() > 3) w++;
+            }
+            rowKeyCount[r] = n;
+            rowWideCount[r] = w;
+        }
+    }
+
+    @Override
+    protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+        int w = MeasureSpec.getSize(widthMeasureSpec);
+        int gap = KEY_GAP;
+        int rows = KEYS.length;
+
+        /* Target height ~ width * 565/1288, capped at 650 */
+        int targetH = (int)(w * 565f / 1288f);
+        if (targetH > 650) targetH = 650;
+
+        keyH = (targetH - 10 - (rows - 1) * gap) / rows;
+        if (keyH < 50) keyH = 50;
+
+        /* Calculate per-row key widths */
+        rowKeyWidth = new int[rows];
+        rowWideWidth = new int[rows];
+        for (int r = 0; r < rows; r++) {
+            int n = rowKeyCount[r] - rowWideCount[r];
+            int wc = rowWideCount[r];
+            int avail = w - (rowKeyCount[r] - 1) * gap;
+            int totalU = n + wc * 2;
+            int unit = avail / totalU;
+            rowKeyWidth[r] = unit;
+            rowWideWidth[r] = unit * 2 + gap;
+        }
+        totalH = 10 + rows * keyH + (rows - 1) * gap;
+
+        setMeasuredDimension(w, totalH);
     }
 
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
-        canvas.drawRect(0, 0, getWidth(), getHeight(), bgPaint);
+        int w = getWidth();
+        canvas.drawRect(0, 0, w, totalH, bgPaint);
 
-        int startY = 10;
+        int gap = KEY_GAP;
         for (int r = 0; r < KEYS.length; r++) {
-            int rowW = 0;
-            int colsOnRow = KEYS[r].length / 2;
-            for (int c = 0; c < colsOnRow; c++) {
-                String label = KEYS[r][c * 2];
+            int x = 0;
+            int y = 10 + r * (keyH + gap);
+            int kw = rowKeyWidth[r];
+            int ww = rowWideWidth[r];
+
+            for (int i = 0; i < KEYS[r].length; i += 4) {
+                String label = KEYS[r][i];
                 if (label == null) continue;
-                rowW += (label.length() > 3 ? 120 : KEY_W) + KEY_GAP;
-            }
-            int startX = (getWidth() - rowW) / 2;
-            int x = startX;
-            int y = startY + r * (KEY_H + KEY_GAP);
+                String code = KEYS[r][i + 1];
+                String shiftLabel = KEYS[r][i + 2];
+                int c = i / 4;
 
-            for (int c = 0; c < colsOnRow; c++) {
-                String label = KEYS[r][c * 2];
-                if (label == null) continue;
-                int kw = label.length() > 3 ? 120 : KEY_W;
-                boolean hasShift = KEYS[r].length > c * 2 + 2;
-                boolean isFnRow0 = fnMode && r == 0 && c * 2 < FN_ROW0.length && FN_ROW0[c * 2] != null;
-                int idx = r * COLS + c;
+                boolean isWide = label.length() > 3;
+                int kx = isWide ? ww : kw;
+                boolean isFnKey = fnMode && r == 0 && c * 2 < FN_ROW0.length && FN_ROW0[c * 2] != null;
+                int idx = r * 20 + c;
 
-                RectF rect = new RectF(x, y, x + kw, y + KEY_H);
-                canvas.drawRoundRect(rect, 4, 4, idx == pressedKey ? pressPaint : keyPaint);
+                RectF rect = new RectF(x, y, x + kx, y + keyH);
+                canvas.drawRoundRect(rect, 5, 5, idx == pressedKey ? pressPaint : keyPaint);
 
+                /* Determine display label */
                 String display = label;
-                if (isFnRow0) {
+                if (isFnKey) {
                     display = FN_ROW0[c * 2];
-                } else if (hasShift && shiftMode) {
-                    display = KEYS[r][c * 2 + 2];
+                } else if (shiftMode && shiftLabel != null) {
+                    display = shiftLabel;
                 }
 
-                canvas.drawText(display, rect.centerX(), rect.centerY() + 6, textPaint);
+                /* Main label */
+                float mainSize = isWide ? 22 : Math.min(24, kw * 0.42f);
+                textPaint.setTextSize(mainSize);
+                canvas.drawText(display, rect.centerX(), rect.centerY() + mainSize * 0.35f, textPaint);
 
-                if (hasShift && !isFnRow0) {
-                    textPaint.setTextSize(11);
-                    canvas.drawText(KEYS[r][c * 2 + 2], rect.centerX(), rect.bottom - 3, textPaint);
-                    textPaint.setTextSize(18);
+                /* Shift hint (small text at bottom) */
+                if (shiftLabel != null && !isFnKey) {
+                    float hintSize = Math.min(13, kw * 0.22f);
+                    textPaint.setTextSize(hintSize);
+                    canvas.drawText(shiftLabel, rect.centerX(), rect.bottom - 3, textPaint);
                 }
-                x += kw + KEY_GAP;
+
+                /* Fn hint (small text at bottom-left area for number row) */
+                if (r == 0 && !fnMode && c * 2 < FN_ROW0.length && FN_ROW0[c * 2] != null) {
+                    float fnSize = Math.min(11, kw * 0.2f);
+                    textPaint.setTextSize(fnSize);
+                    canvas.drawText(FN_ROW0[c * 2], rect.centerX(), rect.top + fnSize + 2, textPaint);
+                }
+
+                x += kx + gap;
             }
         }
     }
@@ -144,45 +219,41 @@ public class VirtualKeyboardView extends View {
         int action = event.getActionMasked();
         float x = event.getX();
         float y = event.getY();
-        int r = (int)((y - 10) / (KEY_H + KEY_GAP));
+        int r = (int)((y - 10) / (keyH + KEY_GAP));
         if (r < 0 || r >= KEYS.length) return true;
 
-        int startX = calcStartX(r);
-        int cx = (int)(x - startX);
-        if (cx < 0) return true;
-
-        int c = 0, xPos = 0;
-        int colsOnRow = KEYS[r].length / 2;
-        for (; c < colsOnRow; c++) {
-            String label = KEYS[r][c * 2];
+        int cx = (int)x;
+        int c = -1, xPos = 0;
+        for (int i = 0; i < KEYS[r].length; i += 4) {
+            String label = KEYS[r][i];
             if (label == null) continue;
-            int kw = label.length() > 3 ? 120 : KEY_W;
-            if (cx >= xPos && cx < xPos + kw) break;
+            int kw = label.length() > 3 ? rowWideWidth[r] : rowKeyWidth[r];
+            if (cx >= xPos && cx < xPos + kw) { c = i / 4; break; }
             xPos += kw + KEY_GAP;
         }
-        if (c >= colsOnRow) return true;
-        String codeStr = KEYS[r][c * 2 + 1];
+        if (c < 0) return true;
+        String codeStr = KEYS[r][c * 4 + 1];
 
         switch (action) {
             case MotionEvent.ACTION_DOWN:
             case MotionEvent.ACTION_MOVE: {
-                int newIdx = r * COLS + c;
+                int newIdx = r * 20 + c;
                 if (newIdx != pressedKey) {
                     if (pressedKey >= 0) {
-                        int pr = pressedKey / COLS;
-                        int pc = pressedKey % COLS;
-                        if (pc * 2 < KEYS[pr].length && KEYS[pr][pc * 2] != null) {
-                            String oldCode = KEYS[pr][pc * 2 + 1];
+                        int pr = pressedKey / 20;
+                        int pc = pressedKey % 20;
+                        if (pc * 4 < KEYS[pr].length && KEYS[pr][pc * 4] != null) {
+                            String oldCode = KEYS[pr][pc * 4 + 1];
                             if (!isSpecial(oldCode)) {
-                                int upCode = resolveCode(pr, pc, oldCode);
-                                Native.nativeSendKey(upCode, false);
+                                int uc = resolveCode(pr, pc, oldCode);
+                                Native.nativeSendKey(uc, false);
                             }
                         }
                     }
                     pressedKey = newIdx;
                     if (!isSpecial(codeStr)) {
-                        int sendCode = resolveCode(r, c, codeStr);
-                        Native.nativeSendKey(sendCode, true);
+                        int sc = resolveCode(r, c, codeStr);
+                        Native.nativeSendKey(sc, true);
                     }
                     invalidate();
                 }
@@ -190,11 +261,11 @@ public class VirtualKeyboardView extends View {
             }
             case MotionEvent.ACTION_UP: {
                 if (pressedKey >= 0) {
-                    int pr = pressedKey / COLS;
-                    int pc = pressedKey % COLS;
-                    if (pc * 2 < KEYS[pr].length) {
-                        String upCode = KEYS[pr][pc * 2 + 1];
-                        if (upCode.equals("--") && pressedKey == r * COLS + c) {
+                    int pr = pressedKey / 20;
+                    int pc = pressedKey % 20;
+                    if (pc * 4 < KEYS[pr].length) {
+                        String upCode = KEYS[pr][pc * 4 + 1];
+                        if (upCode.equals("--") && pressedKey == r * 20 + c) {
                             setVisibility(GONE);
                         } else if (upCode.equals("-1")) {
                             fnMode = !fnMode;
@@ -202,8 +273,8 @@ public class VirtualKeyboardView extends View {
                             shiftMode = !shiftMode;
                             Native.nativeSendKey(42, shiftMode);
                         } else if (!upCode.equals("--")) {
-                            int upCodeInt = resolveCode(pr, pc, upCode);
-                            Native.nativeSendKey(upCodeInt, false);
+                            int uc = resolveCode(pr, pc, upCode);
+                            Native.nativeSendKey(uc, false);
                         }
                     }
                 }
@@ -213,17 +284,5 @@ public class VirtualKeyboardView extends View {
             }
         }
         return true;
-    }
-
-    private int calcStartX(int r) {
-        if (r >= KEYS.length) return 0;
-        int rowW = 0;
-        int colsOnRow = KEYS[r].length / 2;
-        for (int c = 0; c < colsOnRow; c++) {
-            String label = KEYS[r][c * 2];
-            if (label == null) continue;
-            rowW += (label.length() > 3 ? 120 : KEY_W) + KEY_GAP;
-        }
-        return (getWidth() - rowW) / 2;
     }
 }

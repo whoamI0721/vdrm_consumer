@@ -87,7 +87,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         keyboardView.setVisibility(View.GONE);
         RelativeLayout.LayoutParams kvLp = new RelativeLayout.LayoutParams(
                 RelativeLayout.LayoutParams.MATCH_PARENT,
-                530);
+                RelativeLayout.LayoutParams.WRAP_CONTENT);
         kvLp.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
         keyboardView.setLayoutParams(kvLp);
         root.addView(keyboardView);
