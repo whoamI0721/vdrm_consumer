@@ -411,7 +411,7 @@ public class VirtualKeyboardView extends View {
         int action = event.getActionMasked();
         float x = event.getX();
         float y = event.getY();
-        int touchPad = 10;
+        int touchPad = 20;
 
         if (action == MotionEvent.ACTION_CANCEL) {
             cancelAllStates();
