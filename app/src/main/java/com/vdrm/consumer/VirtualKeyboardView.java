@@ -4,31 +4,35 @@ import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
-import android.graphics.Path;
 import android.graphics.RectF;
 import android.view.MotionEvent;
 import android.view.View;
 
 public class VirtualKeyboardView extends View {
 
-    private Paint bgPaint, keyPaint, textPaint, pressPaint, handlePaint;
+    private Paint bgPaint, keyPaint, textPaint, pressPaint, barPaint, whiteDotPaint;
     private int pressedKey = -1;
     private boolean fnMode = false;
     private boolean shiftMode = false;
 
     /* Layout constants */
-    private static final int DRAG_BAR_W = 80;
-    private static final int DRAG_BAR_H = 28;
-    private static final int ALPHA_BAR_W = 16;
-    private static final int DOT_R = 12;
+    private static final int BAR_W = 48;       /* both bars same width */
     private static final float ASPECT_MIN = 7f / 5f;
+    private static final float ALPHA_MIN = 0.2f;
 
     /* State */
-    private boolean showExtra = false;   /* show alpha bar + resize dot */
+    private boolean showExtra = false;
     private float kbAlpha = 1.0f;
-    private int baseW, baseH;           /* default keyboard size */
-    private int kbW, kbH;               /* current keyboard size */
+    private int baseW, baseH;
+    private int kbW, kbH;
     private int screenW, screenH;
+
+    /* Computed layout */
+    private int halfKey;
+    private int dragBarY, dragBarLeft, dragBarRight;
+    private int alphaBarX, alphaBarTop, alphaBarBottom;
+    private float dotCX, dotCY, dotR;
+    private int keyAreaTop;
 
     /* Drag (move keyboard) */
     private boolean isDragging = false;
@@ -44,15 +48,12 @@ public class VirtualKeyboardView extends View {
     private boolean isAdjustingAlpha = false;
     private float alphaStartY, alphaStartVal;
 
-    /* Paints created once */
-    private Paint linePaint, resizeDotPaint, alphaBgPaint, alphaFillPaint, alphaLinePaint;
-
     private int[] rowKeyCount;
     private int[] rowWideCount;
     private int[] rowKeyWidth;
     private int[] rowWideWidth;
     private int keyH;
-    private int totalH;
+    private int keyAreaH;
 
     /* [label, code, shiftLabel or null, shiftCode or null] */
     private static final String[][] KEYS = {
@@ -99,9 +100,8 @@ public class VirtualKeyboardView extends View {
 
     private static final int KEY_GAP = 3;
 
-    /* Fn mapping for row 0 (label,code pairs; null for no mapping) */
     private static final String[] FN_ROW0 = {
-        null, null,                     /* c=0  ` */
+        null, null,
         "F1","59",  "F2","60",  "F3","61",  "F4","62",  "F5","63",
         "F6","64",  "F7","65",  "F8","66",  "F9","67",  "F10","68",
         null, null,  null, null,  null, null,  null, null,
@@ -125,30 +125,14 @@ public class VirtualKeyboardView extends View {
         textPaint.setTextAlign(Paint.Align.CENTER);
         textPaint.setAntiAlias(true);
 
-        handlePaint = new Paint();
-        handlePaint.setColor(0xFF505050);
-        handlePaint.setStyle(Paint.Style.FILL);
+        barPaint = new Paint();
+        barPaint.setColor(0xFF505050);
+        barPaint.setStyle(Paint.Style.FILL);
 
-        linePaint = new Paint();
-        linePaint.setColor(0xFF808080);
-        linePaint.setStrokeWidth(3);
-
-        resizeDotPaint = new Paint();
-        resizeDotPaint.setColor(0xFF606060);
-        resizeDotPaint.setStyle(Paint.Style.FILL);
-        resizeDotPaint.setAntiAlias(true);
-
-        alphaBgPaint = new Paint();
-        alphaBgPaint.setColor(0xFF303030);
-        alphaBgPaint.setStyle(Paint.Style.FILL);
-
-        alphaFillPaint = new Paint();
-        alphaFillPaint.setColor(0xFF8080FF);
-        alphaFillPaint.setStyle(Paint.Style.FILL);
-
-        alphaLinePaint = new Paint();
-        alphaLinePaint.setColor(Color.WHITE);
-        alphaLinePaint.setStrokeWidth(2);
+        whiteDotPaint = new Paint();
+        whiteDotPaint.setColor(Color.WHITE);
+        whiteDotPaint.setStyle(Paint.Style.FILL);
+        whiteDotPaint.setAntiAlias(true);
 
         initRowData();
     }
@@ -190,7 +174,7 @@ public class VirtualKeyboardView extends View {
         int gap = KEY_GAP;
         int rows = KEYS.length;
 
-        keyH = (kbH - DRAG_BAR_H - 10 - (rows - 1) * gap) / rows;
+        keyH = (kbH - 10 - (rows - 1) * gap) / rows;
         if (keyH < 40) keyH = 40;
 
         rowKeyWidth = new int[rows];
@@ -204,59 +188,70 @@ public class VirtualKeyboardView extends View {
             rowKeyWidth[r] = unit;
             rowWideWidth[r] = unit * 2 + gap;
         }
-        totalH = DRAG_BAR_H + 10 + rows * keyH + (rows - 1) * gap;
 
-        setMeasuredDimension(kbW + (showExtra ? ALPHA_BAR_W : 0), totalH);
+        keyAreaH = rows * keyH + (rows - 1) * gap;
+        halfKey = rowKeyWidth[0] / 2;
+
+        /* Layout positions */
+        dragBarY = halfKey;
+        keyAreaTop = dragBarY + BAR_W + halfKey;
+        int totalKeyAreaBottom = keyAreaTop + keyAreaH;
+
+        int dragBarWidth = BAR_W * 5;   /* drag bar wider: ~5x bar width */
+        dragBarLeft = (kbW - dragBarWidth) / 2;
+        dragBarRight = dragBarLeft + dragBarWidth;
+
+        /* Alpha bar: height = key area height - halfKey, centered vertically in key area */
+        int alphaBarH = keyAreaH - halfKey;
+        alphaBarX = kbW + halfKey;
+        alphaBarTop = keyAreaTop + (keyAreaH - alphaBarH) / 2;
+        alphaBarBottom = alphaBarTop + alphaBarH;
+
+        /* Dot at intersection of bar center axes */
+        dotCX = alphaBarX + BAR_W / 2f;
+        dotCY = dragBarY + BAR_W / 2f;
+        dotR = BAR_W * 0.75f;   /* diameter = 1.5x bar width */
+
+        int totalW = alphaBarX + BAR_W;
+        int totalH = totalKeyAreaBottom;
+
+        setMeasuredDimension(totalW, totalH);
     }
 
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
-        int keyW = kbW;
 
-        /* Background */
-        canvas.drawRect(0, 0, keyW, totalH, bgPaint);
+        /* Background over key area only */
+        canvas.drawRect(0, keyAreaTop, kbW, keyAreaTop + keyAreaH, bgPaint);
 
-        /* Drag bar (always visible, centered at top) */
-        int dragBarX = (keyW - DRAG_BAR_W) / 2;
-        RectF dragBar = new RectF(dragBarX, 0, dragBarX + DRAG_BAR_W, DRAG_BAR_H);
-        canvas.drawRoundRect(dragBar, 5, 5, handlePaint);
-        /* Center line on drag bar */
-        canvas.drawLine(dragBar.centerX() - 15, DRAG_BAR_H / 2f,
-                         dragBar.centerX() + 15, DRAG_BAR_H / 2f, linePaint);
+        /* Drag bar (always visible, centered above keyboard) */
+        RectF dragBar = new RectF(dragBarLeft, dragBarY, dragBarRight, dragBarY + BAR_W);
+        canvas.drawRoundRect(dragBar, 8, 8, barPaint);
 
         if (showExtra) {
-            /* Resize dot (top-right corner of keyboard area) */
-            float dotX = keyW - DOT_R;
-            float dotY = DOT_R;
-            canvas.drawCircle(dotX, dotY, DOT_R, resizeDotPaint);
-            /* Small inner circle for visibility */
+            /* Alpha bar (right side, vertical, gray) */
+            RectF alphaBar = new RectF(alphaBarX, alphaBarTop, alphaBarX + BAR_W, alphaBarBottom);
+            canvas.drawRoundRect(alphaBar, 8, 8, barPaint);
+
+            /* White dot on alpha bar indicating current alpha */
+            float alphaDotY = alphaBarBottom - (alphaBarBottom - alphaBarTop) * kbAlpha;
+            canvas.drawCircle(alphaBarX + BAR_W / 2f, alphaDotY, dotR, whiteDotPaint);
+
+            /* Resize dot at intersection of bar center axes */
+            canvas.drawCircle(dotCX, dotCY, dotR, barPaint);
+            /* Inner highlight */
             Paint innerPaint = new Paint();
-            innerPaint.setColor(0xFF909090);
+            innerPaint.setColor(0xFF808080);
             innerPaint.setStyle(Paint.Style.FILL);
             innerPaint.setAntiAlias(true);
-            canvas.drawCircle(dotX, dotY, DOT_R * 0.4f, innerPaint);
-
-            /* Alpha bar (right side, vertical) */
-            int alphaBarX = keyW;
-            canvas.drawRect(alphaBarX, 0, keyW + ALPHA_BAR_W, totalH, alphaBgPaint);
-            /* Alpha fill */
-            float alphaY = totalH * (1 - kbAlpha);
-            canvas.drawRect(alphaBarX, alphaY, keyW + ALPHA_BAR_W, totalH, alphaFillPaint);
-            /* Alpha indicator line */
-            canvas.drawLine(alphaBarX, alphaY, keyW + ALPHA_BAR_W, alphaY, alphaLinePaint);
-            /* Small circle on the alpha bar indicator */
-            Paint alphaDotPaint = new Paint();
-            alphaDotPaint.setColor(Color.WHITE);
-            alphaDotPaint.setStyle(Paint.Style.FILL);
-            alphaDotPaint.setAntiAlias(true);
-            canvas.drawCircle(alphaBarX + ALPHA_BAR_W / 2f, alphaY, 5, alphaDotPaint);
+            canvas.drawCircle(dotCX, dotCY, dotR * 0.4f, innerPaint);
         }
 
         /* Keys */
         int gap = KEY_GAP;
         for (int r = 0; r < KEYS.length; r++) {
-            int y = DRAG_BAR_H + 10 + r * (keyH + gap);
+            int y = keyAreaTop + r * (keyH + gap);
             int kw = rowKeyWidth[r];
             int ww = rowWideWidth[r];
 
@@ -267,7 +262,7 @@ public class VirtualKeyboardView extends View {
                 rowW += (label.length() > 3 ? ww : kw) + gap;
             }
             rowW -= gap;
-            int startX = (keyW - rowW) / 2;
+            int startX = (kbW - rowW) / 2;
             int x = startX;
 
             for (int i = 0; i < KEYS[r].length; i += 4) {
@@ -332,16 +327,14 @@ public class VirtualKeyboardView extends View {
         int action = event.getActionMasked();
         float x = event.getX();
         float y = event.getY();
-        int keyW = kbW;
 
-        /* === Drag bar touch (always active) === */
-        int dragBarX = (keyW - DRAG_BAR_W) / 2;
-        if (x >= dragBarX && x <= dragBarX + DRAG_BAR_W && y <= DRAG_BAR_H) {
+        /* === Drag bar touch === */
+        if (x >= dragBarLeft && x <= dragBarRight && y >= dragBarY && y <= dragBarY + BAR_W) {
             switch (action) {
                 case MotionEvent.ACTION_DOWN:
-                    return true; /* consume, wait for UP to decide tap vs drag */
+                    return true;
                 case MotionEvent.ACTION_MOVE:
-                    if (!isDragging && Math.abs(x - dragBarX - DRAG_BAR_W / 2f) > 10) {
+                    if (!isDragging && Math.abs(x - (dragBarLeft + dragBarRight) / 2f) > 10) {
                         isDragging = true;
                         dragStartX = x;
                         dragStartY = y;
@@ -355,7 +348,6 @@ public class VirtualKeyboardView extends View {
                     return true;
                 case MotionEvent.ACTION_UP:
                     if (!isDragging) {
-                        /* Tap: toggle extra controls */
                         showExtra = !showExtra;
                         requestLayout();
                         invalidate();
@@ -378,10 +370,8 @@ public class VirtualKeyboardView extends View {
         if (!showExtra) return true;
 
         /* === Resize dot touch === */
-        float dotX = keyW - DOT_R;
-        float dotY = DOT_R;
-        float dx = x - dotX, dy = y - dotY;
-        if (dx * dx + dy * dy <= (DOT_R + 10) * (DOT_R + 10)) {
+        float dx = x - dotCX, dy = y - dotCY;
+        if (dx * dx + dy * dy <= (dotR + 10) * (dotR + 10)) {
             switch (action) {
                 case MotionEvent.ACTION_DOWN:
                     isResizing = true;
@@ -396,7 +386,6 @@ public class VirtualKeyboardView extends View {
                         int newH = (int)(resizeStartH + (y - resizeStartY));
                         newW = clampW(newW);
                         newH = clampH(newH);
-                        /* Enforce aspect ratio >= 7/5 */
                         if ((float)newW / newH < ASPECT_MIN) {
                             newW = (int)(newH * ASPECT_MIN);
                             newW = clampW(newW);
@@ -414,7 +403,7 @@ public class VirtualKeyboardView extends View {
         }
 
         /* === Alpha bar touch === */
-        if (x >= keyW && showExtra) {
+        if (x >= alphaBarX && x <= alphaBarX + BAR_W && y >= alphaBarTop && y <= alphaBarBottom) {
             switch (action) {
                 case MotionEvent.ACTION_DOWN:
                     isAdjustingAlpha = true;
@@ -423,8 +412,8 @@ public class VirtualKeyboardView extends View {
                     return true;
                 case MotionEvent.ACTION_MOVE:
                     if (isAdjustingAlpha) {
-                        float dy2 = alphaStartY - y;
-                        kbAlpha = Math.max(0.1f, Math.min(1.0f, alphaStartVal + dy2 / totalH));
+                        float dy2 = (alphaStartY - y) / (alphaBarBottom - alphaBarTop);
+                        kbAlpha = Math.max(ALPHA_MIN, Math.min(1.0f, alphaStartVal + dy2));
                         setAlpha(kbAlpha);
                         invalidate();
                     }
