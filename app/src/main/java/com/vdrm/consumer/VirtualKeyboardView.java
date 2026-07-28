@@ -125,17 +125,6 @@ public class VirtualKeyboardView extends View {
         dotPaint.setStyle(Paint.Style.FILL);
         dotPaint.setAntiAlias(true);
 
-        setLayerType(View.LAYER_TYPE_HARDWARE, null);
-
-        addOnLayoutChangeListener((v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
-            float dx = left - oldLeft;
-            float dy = top - oldTop;
-            if ((dx != 0f || dy != 0f) && (oldLeft != 0 || oldTop != 0)) {
-                setTranslationX(getTranslationX() - dx);
-                setTranslationY(getTranslationY() - dy);
-            }
-        });
-
         dragSlop = ViewConfiguration.get(context).getScaledTouchSlop();
 
         initRowData();
@@ -547,8 +536,8 @@ public class VirtualKeyboardView extends View {
                     return true;
                 case MotionEvent.ACTION_MOVE:
                     if (isResizing) {
-                        int newW = (int)(resizeStartW + (x - resizeStartX) * 0.6f);
-                        int newH = (int)(resizeStartH - (y - resizeStartY) * 0.6f);
+                        int newW = (int)(resizeStartW + (x - resizeStartX));
+                        int newH = (int)(resizeStartH - (y - resizeStartY));
                         newW = clampW(newW);
                         newH = clampH(newH);
                         if ((float)newW / newH < ASPECT_MIN) {
@@ -563,8 +552,14 @@ public class VirtualKeyboardView extends View {
                     return true;
                 case MotionEvent.ACTION_UP:
                     isResizing = false;
+                    int oldLeft = getLeft();
+                    int oldTop = getTop();
                     requestLayout();
                     invalidate();
+                    post(() -> {
+                        setTranslationX(getTranslationX() - (getLeft() - oldLeft));
+                        setTranslationY(getTranslationY() - (getTop() - oldTop));
+                    });
                     return true;
             }
         }
