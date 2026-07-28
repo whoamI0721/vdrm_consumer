@@ -148,8 +148,10 @@ static int collect_buffers(struct consumer *c)
     for (int attempt = 0; attempt < target * 4 && found < target; attempt++) {
         ANativeWindowBuffer *anb = NULL;
         int fence = -1;
-        if (api.dequeueBuffer(win, &anb, &fence) != 0 || !anb) {
-            LOGE("dequeue failed attempt %d", attempt);
+        int dq_ret = api.dequeueBuffer(win, &anb, &fence);
+        if (dq_ret != 0 || !anb) {
+            LOGE("dequeue failed attempt %d ret=%d anb=%p fence=%d err=%s",
+                 attempt, dq_ret, (void*)anb, fence, strerror(-dq_ret));
         if (fence >= 0) {
             struct pollfd pfd = { .fd = fence, .events = POLLIN };
             poll(&pfd, 1, 1000);
@@ -485,9 +487,11 @@ Java_com_vdrm_consumer_Native_nativeStart(JNIEnv *env, jclass clazz, jlong handl
     c->buf_count = min_ud + 2;
     if (c->buf_count > MAX_BUFS) c->buf_count = MAX_BUFS;
 
-    api.setBufferCount(c->win, c->buf_count);
-    ANativeWindow_setBuffersGeometry(c->win, c->screen_w, c->screen_h,
+    LOGI("min_ud=%d buf_count=%d", min_ud, c->buf_count);
+    int sbc_ret = api.setBufferCount(c->win, c->buf_count);
+    int geo_ret = ANativeWindow_setBuffersGeometry(c->win, c->screen_w, c->screen_h,
                                      AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM);
+    LOGI("setBufferCount=%d setBuffersGeometry=%d", sbc_ret, geo_ret);
 
     if (collect_buffers(c) < 0) {
         LOGE("collect_buffers failed");
