@@ -33,7 +33,6 @@ public class VirtualKeyboardView extends View {
 
     private boolean isDragging = false;
     private float dragDownX, dragDownY;
-    private float dragViewStartX, dragViewStartY;
     private int dragSlop;
     private int dragPointerId = -1;
 
@@ -429,8 +428,6 @@ public class VirtualKeyboardView extends View {
                     dragPointerId = event.getPointerId(0);
                     dragDownX = x;
                     dragDownY = y;
-                    dragViewStartX = getTranslationX();
-                    dragViewStartY = getTranslationY();
                     return true;
                 case MotionEvent.ACTION_MOVE:
                 {
@@ -444,8 +441,10 @@ public class VirtualKeyboardView extends View {
                         }
                     }
                     if (isDragging) {
-                        setTranslationX(dragViewStartX + (px - dragDownX));
-                        setTranslationY(dragViewStartY + (py - dragDownY));
+                        offsetLeftAndRight((int)(px - dragDownX));
+                        offsetTopAndBottom((int)(py - dragDownY));
+                        dragDownX = px;
+                        dragDownY = py;
                     }
                     return true;
                 }
@@ -469,8 +468,10 @@ public class VirtualKeyboardView extends View {
                     int idx = event.findPointerIndex(dragPointerId);
                     if (idx < 0) return true;
                     float px = event.getX(idx), py = event.getY(idx);
-                    setTranslationX(dragViewStartX + (px - dragDownX));
-                    setTranslationY(dragViewStartY + (py - dragDownY));
+                    offsetLeftAndRight((int)(px - dragDownX));
+                    offsetTopAndBottom((int)(py - dragDownY));
+                    dragDownX = px;
+                    dragDownY = py;
                     return true;
                 }
                 case MotionEvent.ACTION_UP:
