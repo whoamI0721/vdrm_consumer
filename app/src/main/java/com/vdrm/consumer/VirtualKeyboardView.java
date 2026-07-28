@@ -33,6 +33,7 @@ public class VirtualKeyboardView extends View {
 
     private boolean isDragging = false;
     private float dragDownX, dragDownY;
+    private float dragAccumX, dragAccumY;
     private int dragSlop;
     private int dragPointerId = -1;
 
@@ -441,8 +442,16 @@ public class VirtualKeyboardView extends View {
                         }
                     }
                     if (isDragging) {
-                        offsetLeftAndRight((int)(px - dragDownX));
-                        offsetTopAndBottom((int)(py - dragDownY));
+                        dragAccumX += px - dragDownX;
+                        dragAccumY += py - dragDownY;
+                        int dx = (int) dragAccumX;
+                        int dy = (int) dragAccumY;
+                        if (dx != 0 || dy != 0) {
+                            offsetLeftAndRight(dx);
+                            offsetTopAndBottom(dy);
+                            dragAccumX -= dx;
+                            dragAccumY -= dy;
+                        }
                         dragDownX = px;
                         dragDownY = py;
                     }
@@ -467,8 +476,16 @@ public class VirtualKeyboardView extends View {
                     int idx = event.findPointerIndex(dragPointerId);
                     if (idx < 0) return true;
                     float px = event.getX(idx), py = event.getY(idx);
-                    offsetLeftAndRight((int)(px - dragDownX));
-                    offsetTopAndBottom((int)(py - dragDownY));
+                    dragAccumX += px - dragDownX;
+                    dragAccumY += py - dragDownY;
+                    int dx = (int) dragAccumX;
+                    int dy = (int) dragAccumY;
+                    if (dx != 0 || dy != 0) {
+                        offsetLeftAndRight(dx);
+                        offsetTopAndBottom(dy);
+                        dragAccumX -= dx;
+                        dragAccumY -= dy;
+                    }
                     dragDownX = px;
                     dragDownY = py;
                     return true;
@@ -564,9 +581,8 @@ public class VirtualKeyboardView extends View {
                         recomputeLayout();
                         int newTotalW = alphaBarX + BAR_W + (int) dotR;
                         int newTotalH = keyAreaTop + keyAreaH + (int) dotR;
-                        if (newTotalW != getMeasuredWidth() || newTotalH != getMeasuredHeight()) {
-                            setMeasuredDimension(newTotalW, newTotalH);
-                            requestLayout();
+                        if (newTotalW != getWidth() || newTotalH != getHeight()) {
+                            layout(getLeft(), getTop(), getLeft() + newTotalW, getTop() + newTotalH);
                         }
                         offsetTopAndBottom(-(int)(kbH - oldH));
                         invalidate();
@@ -574,14 +590,7 @@ public class VirtualKeyboardView extends View {
                     return true;
                 case MotionEvent.ACTION_UP:
                     isResizing = false;
-                    {
-                        int oldLeft = getLeft();
-                        int oldTop = getTop();
-                        requestLayout();
-                        invalidate();
-                        post(() -> offsetLeftAndRight(oldLeft - getLeft()));
-                        post(() -> offsetTopAndBottom(oldTop - getTop()));
-                    }
+                    invalidate();
                     return true;
             }
         }
