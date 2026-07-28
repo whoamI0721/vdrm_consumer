@@ -7,6 +7,7 @@ import android.graphics.Paint;
 import android.graphics.RectF;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 
 public class VirtualKeyboardView extends View {
 
@@ -15,36 +16,31 @@ public class VirtualKeyboardView extends View {
     private boolean fnMode = false;
     private boolean shiftMode = false;
 
-    /* Layout constants */
-    private static final int BAR_W = 24;       /* both bars same width */
-    private static final int CTRL_GAP = 20;    /* fixed gap between controls and keyboard */
+    private static final int BAR_W = 24;
+    private static final int CTRL_GAP = 20;
     private static final float ASPECT_MIN = 7f / 5f;
     private static final float ALPHA_MIN = 0.2f;
 
-    /* State */
     private boolean showExtra = false;
     private float kbAlpha = 1.0f;
     private int baseW, baseH;
     private int kbW, kbH;
     private int screenW, screenH;
 
-    /* Computed layout */
     private int dragBarY, dragBarLeft, dragBarRight;
     private int alphaBarX, alphaBarTop, alphaBarBottom;
     private float dotCX, dotCY, dotR;
     private int keyAreaTop;
 
-    /* Drag (move keyboard) */
     private boolean isDragging = false;
-    private float dragStartX, dragStartY;
+    private float dragDownX, dragDownY;
     private float dragViewStartX, dragViewStartY;
+    private int dragSlop;
 
-    /* Resize */
     private boolean isResizing = false;
     private float resizeStartX, resizeStartY;
     private int resizeStartW, resizeStartH;
 
-    /* Alpha */
     private boolean isAdjustingAlpha = false;
     private float alphaStartY, alphaStartVal;
 
@@ -57,17 +53,13 @@ public class VirtualKeyboardView extends View {
     private int initKeyH;
     private int initKeyAreaH;
 
-    /* [label, code, shiftLabel or null, shiftCode or null] */
     private static final String[][] KEYS = {
-        /* Row 0: number/symbol row */
         {"`","41","~","41",  "1","2","!","2",  "2","3","@","3",
          "3","4","#","4",  "4","5","$","5",  "5","6","%","6",
          "6","7","^","7",  "7","8","&","8",  "8","9","*","9",
          "9","10","(","10",  "0","11",")","11",
          "-","12","_","12",  "=","13","+","13",
          "Backspace","14",null,null},
-
-        /* Row 1: q row */
         {"Tab","15",null,null,  "q","16",null,null,
          "w","17",null,null,  "e","18",null,null,
          "r","19",null,null,  "t","20",null,null,
@@ -75,8 +67,6 @@ public class VirtualKeyboardView extends View {
          "i","23",null,null,  "o","24",null,null,
          "p","25",null,null,  "[","26","{","26",
          "]","27","}","27",  "\\","43","|","43"},
-
-        /* Row 2: a row */
         {"Caps","58",null,null,  "a","30",null,null,
          "s","31",null,null,  "d","32",null,null,
          "f","33",null,null,  "g","34",null,null,
@@ -84,16 +74,12 @@ public class VirtualKeyboardView extends View {
          "k","37",null,null,  "l","38",null,null,
          ";","39",":","39",  "'","40","\"","40",
          "Enter","28",null,null},
-
-        /* Row 3: z row */
         {"Shift","-2",null,null,  "z","44",null,null,
          "x","45",null,null,  "c","46",null,null,
          "v","47",null,null,  "b","48",null,null,
          "n","49",null,null,  "m","50",null,null,
          ",","51","<","51",  ".","52",">","52",
          "/","53","?","53",  "Shift","-2",null,null},
-
-        /* Row 4: bottom row */
         {"Ctrl","29",null,null,  "Super","125",null,null,
          "Alt","56",null,null,
          "     Space     ","57",null,null,
@@ -108,6 +94,9 @@ public class VirtualKeyboardView extends View {
         "F6","64",  "F7","65",  "F8","66",  "F9","67",  "F10","68",
         null, null,  null, null,  null, null,  null, null,
     };
+
+    private RectF[][] keyRects;
+    private int[][] keyInnerCols;
 
     public VirtualKeyboardView(Context context) {
         super(context);
@@ -135,6 +124,17 @@ public class VirtualKeyboardView extends View {
         dotPaint.setColor(0xFF808080);
         dotPaint.setStyle(Paint.Style.FILL);
         dotPaint.setAntiAlias(true);
+
+        addOnLayoutChangeListener((v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
+            float dx = left - oldLeft;
+            float dy = top - oldTop;
+            if ((dx != 0f || dy != 0f) && (oldLeft != 0 || oldTop != 0)) {
+                setTranslationX(getTranslationX() - dx);
+                setTranslationY(getTranslationY() - dy);
+            }
+        });
+
+        dragSlop = ViewConfiguration.get(context).getScaledTouchSlop();
 
         initRowData();
     }
@@ -167,12 +167,7 @@ public class VirtualKeyboardView extends View {
         kbH = baseH;
     }
 
-    @Override
-    protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
-        int parentW = MeasureSpec.getSize(widthMeasureSpec);
-        int parentH = MeasureSpec.getSize(heightMeasureSpec);
-        if (screenW == 0) setScreenSize(parentW, parentH);
-
+    private void recomputeLayout() {
         int gap = KEY_GAP;
         int rows = KEYS.length;
 
@@ -193,13 +188,11 @@ public class VirtualKeyboardView extends View {
 
         keyAreaH = rows * keyH + (rows - 1) * gap;
 
-        /* Store initial dimensions on first measure */
         if (initKeyH == 0) {
             initKeyH = keyH;
             initKeyAreaH = keyAreaH;
         }
 
-        /* Layout positions — fixed gaps, not scaling */
         dragBarY = CTRL_GAP;
         keyAreaTop = dragBarY + BAR_W + CTRL_GAP;
 
@@ -207,54 +200,36 @@ public class VirtualKeyboardView extends View {
         dragBarLeft = (kbW - dragBarWidth) / 2;
         dragBarRight = dragBarLeft + dragBarWidth;
 
-        /* Alpha bar: proportionally shorter by half initial key height, bottom-aligned */
         int alphaBarH = keyAreaH - (int)(initKeyH * 0.5f * keyAreaH / (float) initKeyAreaH);
         alphaBarX = kbW + CTRL_GAP;
         alphaBarBottom = keyAreaTop + keyAreaH;
         alphaBarTop = alphaBarBottom - alphaBarH;
 
-        /* Dot at intersection of bar center axes */
         dotCX = alphaBarX + BAR_W / 2f;
         dotCY = dragBarY + BAR_W / 2f;
         dotR = BAR_W * 0.75f;
 
-        /* View size: include padding for dots to avoid clipping */
-        int totalW = alphaBarX + BAR_W + (int) dotR;
-        int totalH = keyAreaTop + keyAreaH + (int) dotR;
-
-        setMeasuredDimension(totalW, totalH);
+        recomputeKeyRects();
     }
 
-    @Override
-    protected void onDraw(Canvas canvas) {
-        super.onDraw(canvas);
-
-        /* Background over key area only */
-        canvas.drawRect(0, keyAreaTop, kbW, keyAreaTop + keyAreaH, bgPaint);
-
-        /* Drag bar (always visible, pill shape, centered above keyboard) */
-        RectF dragBar = new RectF(dragBarLeft, dragBarY, dragBarRight, dragBarY + BAR_W);
-        canvas.drawRoundRect(dragBar, BAR_W / 2f, BAR_W / 2f, barPaint);
-
-        if (showExtra) {
-            /* Alpha bar (right side, vertical, gray, rounded) */
-            RectF alphaBar = new RectF(alphaBarX, alphaBarTop, alphaBarX + BAR_W, alphaBarBottom);
-            canvas.drawRoundRect(alphaBar, BAR_W / 2f, BAR_W / 2f, barPaint);
-
-            /* Dot on alpha bar indicating current alpha */
-            float alphaDotY = alphaBarBottom - (alphaBarBottom - alphaBarTop) * kbAlpha;
-            canvas.drawCircle(alphaBarX + BAR_W / 2f, alphaDotY, dotR, dotPaint);
-
-            /* Resize dot at intersection of bar center axes */
-            canvas.drawCircle(dotCX, dotCY, dotR, dotPaint);
-        }
-
-        /* Keys */
+    private void recomputeKeyRects() {
         int gap = KEY_GAP;
-        for (int r = 0; r < KEYS.length; r++) {
-            int y = keyAreaTop + r * (keyH + gap);
+        int rows = KEYS.length;
+        keyRects = new RectF[rows][];
+        keyInnerCols = new int[rows][];
+
+        for (int r = 0; r < rows; r++) {
             int kw = rowKeyWidth[r];
             int ww = rowWideWidth[r];
+            int y = keyAreaTop + r * (keyH + gap);
+
+            int valid = 0;
+            for (int i = 0; i < KEYS[r].length; i += 4) {
+                if (KEYS[r][i] != null) valid++;
+            }
+
+            keyRects[r] = new RectF[valid];
+            keyInnerCols[r] = new int[valid];
 
             int rowW = 0;
             for (int i = 0; i < KEYS[r].length; i += 4) {
@@ -263,8 +238,56 @@ public class VirtualKeyboardView extends View {
                 rowW += (label.length() > 3 ? ww : kw) + gap;
             }
             rowW -= gap;
+
             int startX = (kbW - rowW) / 2;
-            int x = startX;
+            int cx = startX;
+            int idx = 0;
+            for (int i = 0; i < KEYS[r].length; i += 4) {
+                String label = KEYS[r][i];
+                if (label == null) continue;
+                int kx = label.length() > 3 ? ww : kw;
+                keyRects[r][idx] = new RectF(cx, y, cx + kx, y + keyH);
+                keyInnerCols[r][idx] = i / 4;
+                cx += kx + gap;
+                idx++;
+            }
+        }
+    }
+
+    @Override
+    protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+        int parentW = MeasureSpec.getSize(widthMeasureSpec);
+        int parentH = MeasureSpec.getSize(heightMeasureSpec);
+        if (screenW == 0) setScreenSize(parentW, parentH);
+
+        recomputeLayout();
+
+        int totalW = alphaBarX + BAR_W + (int) dotR;
+        int totalH = keyAreaTop + keyAreaH + (int) dotR;
+        setMeasuredDimension(totalW, totalH);
+    }
+
+    @Override
+    protected void onDraw(Canvas canvas) {
+        super.onDraw(canvas);
+
+        canvas.drawRect(0, keyAreaTop, kbW, keyAreaTop + keyAreaH, bgPaint);
+
+        RectF dragBar = new RectF(dragBarLeft, dragBarY, dragBarRight, dragBarY + BAR_W);
+        canvas.drawRoundRect(dragBar, BAR_W / 2f, BAR_W / 2f, barPaint);
+
+        if (showExtra) {
+            RectF alphaBar = new RectF(alphaBarX, alphaBarTop, alphaBarX + BAR_W, alphaBarBottom);
+            canvas.drawRoundRect(alphaBar, BAR_W / 2f, BAR_W / 2f, barPaint);
+
+            float alphaDotY = alphaBarBottom - (alphaBarBottom - alphaBarTop) * kbAlpha;
+            canvas.drawCircle(alphaBarX + BAR_W / 2f, alphaDotY, dotR, dotPaint);
+
+            canvas.drawCircle(dotCX, dotCY, dotR, dotPaint);
+        }
+
+        for (int r = 0; r < KEYS.length; r++) {
+            int kw = rowKeyWidth[r];
 
             for (int i = 0; i < KEYS[r].length; i += 4) {
                 String label = KEYS[r][i];
@@ -273,11 +296,12 @@ public class VirtualKeyboardView extends View {
                 int c = i / 4;
 
                 boolean isWide = label.length() > 3;
-                int kx = isWide ? ww : kw;
                 boolean isFnKey = fnMode && r == 0 && c * 2 < FN_ROW0.length && FN_ROW0[c * 2] != null;
                 int idx = r * 20 + c;
 
-                RectF rect = new RectF(x, y, x + kx, y + keyH);
+                RectF rect = keyRects[r][i / 4];
+                if (rect == null) continue;
+
                 canvas.drawRoundRect(rect, 5, 5, idx == pressedKey ? pressPaint : keyPaint);
 
                 String display = label;
@@ -296,19 +320,63 @@ public class VirtualKeyboardView extends View {
                     textPaint.setTextSize(fnSize);
                     canvas.drawText(FN_ROW0[c * 2], rect.centerX(), rect.top + fnSize + 3, textPaint);
                 }
-
-                x += kx + gap;
             }
         }
     }
 
-    private static boolean isSpecial(String code) {
-        return code.equals("--") || code.equals("-1") || code.equals("-2");
+    private int hitTest(float x, float y) {
+        for (int r = 0; r < keyRects.length; r++) {
+            for (int c = 0; c < keyRects[r].length; c++) {
+                if (keyRects[r][c] != null && keyRects[r][c].contains(x, y)) {
+                    int col = keyInnerCols[r][c];
+                    return r * 20 + col;
+                }
+            }
+        }
+        return -1;
+    }
+
+    private void sendKeyDown(int hit) {
+        if (hit < 0) return;
+        int r = hit / 20;
+        int col = hit % 20;
+        String baseCode = KEYS[r][col * 4 + 1];
+
+        if (baseCode.equals("-1")) {
+            fnMode = !fnMode;
+            shiftMode = false;
+            updatePressedKey(hit);
+            invalidate();
+            return;
+        }
+        if (baseCode.equals("-2")) {
+            shiftMode = !shiftMode;
+            updatePressedKey(hit);
+            invalidate();
+            return;
+        }
+
+        int code = resolveCode(r, col, baseCode);
+        Native.nativeSendKey(code, true);
+        updatePressedKey(hit);
+        invalidate();
+    }
+
+    private void updatePressedKey(int hit) {
+        pressedKey = hit;
+    }
+
+    private void clearPressedKey() {
+        pressedKey = -1;
     }
 
     private int resolveCode(int r, int c, String baseCode) {
         if (fnMode && r == 0 && c * 2 < FN_ROW0.length && FN_ROW0[c * 2] != null) {
             return Integer.parseInt(FN_ROW0[c * 2 + 1]);
+        }
+        String shiftCode = KEYS[r][c * 4 + 3];
+        if (shiftMode && shiftCode != null) {
+            return Integer.parseInt(shiftCode);
         }
         return Integer.parseInt(baseCode);
     }
@@ -323,30 +391,64 @@ public class VirtualKeyboardView extends View {
         return Math.max(150, Math.min(maxH, h));
     }
 
+    private void cancelAllStates() {
+        if (isDragging) {
+            isDragging = false;
+        }
+        if (isResizing) {
+            isResizing = false;
+        }
+        if (isAdjustingAlpha) {
+            isAdjustingAlpha = false;
+        }
+        if (pressedKey >= 0) {
+            int r = pressedKey / 20;
+            int col = pressedKey % 20;
+            String baseCode = KEYS[r][col * 4 + 1];
+            if (!baseCode.equals("-1") && !baseCode.equals("-2")) {
+                int code = resolveCode(r, col, baseCode);
+                Native.nativeSendKey(code, false);
+            }
+            clearPressedKey();
+            invalidate();
+        }
+    }
+
     @Override
     public boolean onTouchEvent(MotionEvent event) {
         int action = event.getActionMasked();
         float x = event.getX();
         float y = event.getY();
+        int touchPad = 30;
 
-        /* === Drag bar touch (with generous touch padding) === */
-        int touchPad = 30;  /* 1.5x sensitivity */
-        if (x >= dragBarLeft && x <= dragBarRight
-                && y >= dragBarY - touchPad && y <= dragBarY + BAR_W + touchPad) {
+        if (action == MotionEvent.ACTION_CANCEL) {
+            cancelAllStates();
+            return true;
+        }
+
+        /* === Drag bar === */
+        boolean onDragBar = x >= dragBarLeft && x <= dragBarRight
+                && y >= dragBarY - touchPad && y <= dragBarY + BAR_W + touchPad;
+
+        if (onDragBar) {
             switch (action) {
                 case MotionEvent.ACTION_DOWN:
+                    isDragging = false;
+                    dragDownX = x;
+                    dragDownY = y;
+                    dragViewStartX = getTranslationX();
+                    dragViewStartY = getTranslationY();
                     return true;
                 case MotionEvent.ACTION_MOVE:
-                    if (!isDragging && Math.abs(x - (dragBarLeft + dragBarRight) / 2f) > 5) {
-                        isDragging = true;
-                        dragStartX = x;
-                        dragStartY = y;
-                        dragViewStartX = getTranslationX();
-                        dragViewStartY = getTranslationY();
+                    if (!isDragging) {
+                        float dist = (float) Math.hypot(x - dragDownX, y - dragDownY);
+                        if (dist > dragSlop) {
+                            isDragging = true;
+                        }
                     }
                     if (isDragging) {
-                        setTranslationX(dragViewStartX + (x - dragStartX));
-                        setTranslationY(dragViewStartY + (y - dragStartY));
+                        setTranslationX(dragViewStartX + (x - dragDownX));
+                        setTranslationY(dragViewStartY + (y - dragDownY));
                     }
                     return true;
                 case MotionEvent.ACTION_UP:
@@ -360,21 +462,79 @@ public class VirtualKeyboardView extends View {
             }
         }
 
+        /* If we were dragging and finger left the bar, keep dragging */
         if (isDragging) {
-            if (action == MotionEvent.ACTION_MOVE) {
-                setTranslationX(dragViewStartX + (x - dragStartX));
-                setTranslationY(dragViewStartY + (y - dragStartY));
-                return true;
+            switch (action) {
+                case MotionEvent.ACTION_MOVE:
+                    setTranslationX(dragViewStartX + (x - dragDownX));
+                    setTranslationY(dragViewStartY + (y - dragDownY));
+                    return true;
+                case MotionEvent.ACTION_UP:
+                    isDragging = false;
+                    return true;
             }
-            isDragging = false;
+        }
+
+        /* === Key input (always active when not on controls) === */
+        int hit = hitTest(x, y);
+        if (hit >= 0) {
+            switch (action) {
+                case MotionEvent.ACTION_DOWN:
+                    sendKeyDown(hit);
+                    return true;
+                case MotionEvent.ACTION_MOVE:
+                    if (pressedKey >= 0 && hit != pressedKey) {
+                        int oldR = pressedKey / 20;
+                        int oldCol = pressedKey % 20;
+                        String oldBase = KEYS[oldR][oldCol * 4 + 1];
+                        if (!oldBase.equals("-1") && !oldBase.equals("-2")) {
+                            int oldCode = resolveCode(oldR, oldCol, oldBase);
+                            Native.nativeSendKey(oldCode, false);
+                        }
+                        clearPressedKey();
+                        sendKeyDown(hit);
+                    } else if (pressedKey < 0) {
+                        sendKeyDown(hit);
+                    }
+                    return true;
+                case MotionEvent.ACTION_UP:
+                    if (pressedKey >= 0) {
+                        int pr = pressedKey / 20;
+                        int pCol = pressedKey % 20;
+                        String pBase = KEYS[pr][pCol * 4 + 1];
+                        if (!pBase.equals("-1") && !pBase.equals("-2")) {
+                            int pCode = resolveCode(pr, pCol, pBase);
+                            Native.nativeSendKey(pCode, false);
+                        }
+                        clearPressedKey();
+                        invalidate();
+                    }
+                    return true;
+            }
+        } else {
+            /* Finger moved off all keys */
+            if (action == MotionEvent.ACTION_MOVE && pressedKey >= 0) {
+                int pr = pressedKey / 20;
+                int pCol = pressedKey % 20;
+                String pBase = KEYS[pr][pCol * 4 + 1];
+                if (!pBase.equals("-1") && !pBase.equals("-2")) {
+                    int pCode = resolveCode(pr, pCol, pBase);
+                    Native.nativeSendKey(pCode, false);
+                }
+                clearPressedKey();
+                invalidate();
+            }
+            if (action == MotionEvent.ACTION_MOVE) return true;
+        }
+
+        if (!showExtra) {
+            if (action == MotionEvent.ACTION_UP) return true;
             return true;
         }
 
-        if (!showExtra) return true;
-
-        /* === Resize dot touch === */
-        float dx = x - dotCX, dy = y - dotCY;
-        if (dx * dx + dy * dy <= (dotR + touchPad) * (dotR + touchPad)) {
+        /* === Resize dot (only when showExtra) === */
+        float rdx = x - dotCX, rdy = y - dotCY;
+        if (rdx * rdx + rdy * rdy <= (dotR + touchPad) * (dotR + touchPad)) {
             switch (action) {
                 case MotionEvent.ACTION_DOWN:
                     isResizing = true;
@@ -385,8 +545,8 @@ public class VirtualKeyboardView extends View {
                     return true;
                 case MotionEvent.ACTION_MOVE:
                     if (isResizing) {
-                        int newW = (int)(resizeStartW + (x - resizeStartX));
-                        int newH = (int)(resizeStartH + (y - resizeStartY));
+                        int newW = (int)(resizeStartW + (x - resizeStartX) * 0.5f);
+                        int newH = (int)(resizeStartH - (y - resizeStartY) * 0.5f);
                         newW = clampW(newW);
                         newH = clampH(newH);
                         if ((float)newW / newH < ASPECT_MIN) {
@@ -395,17 +555,19 @@ public class VirtualKeyboardView extends View {
                         }
                         kbW = newW;
                         kbH = newH;
-                        requestLayout();
+                        recomputeLayout();
                         invalidate();
                     }
                     return true;
                 case MotionEvent.ACTION_UP:
                     isResizing = false;
+                    requestLayout();
+                    invalidate();
                     return true;
             }
         }
 
-        /* === Alpha bar touch === */
+        /* === Alpha bar (only when showExtra) === */
         if (x >= alphaBarX - touchPad && x <= alphaBarX + BAR_W + touchPad
                 && y >= alphaBarTop - touchPad && y <= alphaBarBottom + touchPad) {
             switch (action) {
@@ -417,7 +579,10 @@ public class VirtualKeyboardView extends View {
                 case MotionEvent.ACTION_MOVE:
                     if (isAdjustingAlpha) {
                         float dy2 = (alphaStartY - y) / (alphaBarBottom - alphaBarTop);
-                        kbAlpha = Math.max(ALPHA_MIN, Math.min(1.0f, alphaStartVal + dy2));
+                        float mid = (ALPHA_MIN + 1.0f) * 0.5f;
+                        float dist = Math.abs(alphaStartVal - mid) / (1.0f - mid);
+                        float damp = 1.0f - 0.85f * dist * dist;
+                        kbAlpha = Math.max(ALPHA_MIN, Math.min(1.0f, alphaStartVal + dy2 * damp));
                         setAlpha(kbAlpha);
                         invalidate();
                     }
