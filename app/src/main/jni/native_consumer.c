@@ -19,6 +19,7 @@
 
 #define TAG "VDRM"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
 #define VDRM_MAGIC "/vdrm_magic"
@@ -215,7 +216,10 @@ static void *render_loop(void *arg)
     while (c->running) {
         ANativeWindowBuffer *anb = NULL;
         int fence = -1;
-        if (api.dequeueBuffer(c->win, &anb, &fence) != 0 || !anb) {
+        fence = -1;
+        int dq_ret = api.dequeueBuffer(c->win, &anb, &fence);
+        if (dq_ret != 0 || !anb) {
+            LOGE("render dequeue failed ret=%d err=%s", dq_ret, strerror(-dq_ret));
             usleep(16000);
             continue;
         }
@@ -488,16 +492,27 @@ Java_com_vdrm_consumer_Native_nativeStart(JNIEnv *env, jclass clazz, jlong handl
     if (c->buf_count > MAX_BUFS) c->buf_count = MAX_BUFS;
 
     LOGI("min_ud=%d buf_count=%d", min_ud, c->buf_count);
-    int sbc_ret = api.setBufferCount(c->win, c->buf_count);
     int geo_ret = ANativeWindow_setBuffersGeometry(c->win, c->screen_w, c->screen_h,
                                      AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM);
-    LOGI("setBufferCount=%d setBuffersGeometry=%d", sbc_ret, geo_ret);
+    int sbc_ret = api.setBufferCount(c->win, c->buf_count);
+    LOGI("setBuffersGeometry=%d setBufferCount=%d", geo_ret, sbc_ret);
 
     if (collect_buffers(c) < 0) {
-        LOGE("collect_buffers failed");
+        LOGW("collect_buffers failed, retrying without setBufferCount");
         ANativeWindow_release(c->win);
-        c->win = NULL;
-        return;
+        c->win = ANativeWindow_fromSurface(env, surface);
+        if (!c->win) { LOGE("ANativeWindow_fromSurface failed (retry)"); return; }
+        c->screen_w = ANativeWindow_getWidth(c->win);
+        c->screen_h = ANativeWindow_getHeight(c->win);
+        geo_ret = ANativeWindow_setBuffersGeometry(c->win, c->screen_w, c->screen_h,
+                                         AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM);
+        LOGI("retry setBuffersGeometry=%d (no setBufferCount)", geo_ret);
+        if (collect_buffers(c) < 0) {
+            LOGE("collect_buffers failed even without setBufferCount");
+            ANativeWindow_release(c->win);
+            c->win = NULL;
+            return;
+        }
     }
 
     c->running = true;
