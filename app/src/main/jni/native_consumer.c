@@ -155,7 +155,8 @@ static int collect_buffers(struct consumer *c)
             poll(&pfd, 1, 1000);
             close(fence);
         }
-            break;
+            usleep(16000);
+            continue;
         }
         if (fence >= 0) close(fence);
 
