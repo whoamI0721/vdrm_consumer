@@ -451,7 +451,6 @@ public class VirtualKeyboardView extends View {
                 case MotionEvent.ACTION_UP:
                     if (!isDragging) {
                         showExtra = !showExtra;
-                        requestLayout();
                         invalidate();
                     }
                     isDragging = false;
