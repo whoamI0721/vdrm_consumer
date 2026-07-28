@@ -8,6 +8,7 @@
 #include <jni.h>
 #include <poll.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -123,6 +124,19 @@ static int vdrm_present(int idx)
     return 0;
 }
 
+static int vdrm_wait_fence(int idx)
+{
+    char path[64];
+    int len = snprintf(path, sizeof(path), VDRM_MAGIC "/fence/%d", idx);
+    if (len <= 0) return -EINVAL;
+    int fd = open(path, O_RDONLY | O_NONBLOCK);
+    if (fd < 0) return -errno;
+    struct pollfd pfd = { .fd = fd, .events = POLLIN };
+    poll(&pfd, 1, 5000);
+    close(fd);
+    return 0;
+}
+
 static int collect_buffers(struct consumer *c)
 {
     ANativeWindow *win = c->win;
@@ -136,7 +150,11 @@ static int collect_buffers(struct consumer *c)
         int fence = -1;
         if (api.dequeueBuffer(win, &anb, &fence) != 0 || !anb) {
             LOGE("dequeue failed attempt %d", attempt);
-            if (fence >= 0) close(fence);
+        if (fence >= 0) {
+            struct pollfd pfd = { .fd = fence, .events = POLLIN };
+            poll(&pfd, 1, 1000);
+            close(fence);
+        }
             break;
         }
         if (fence >= 0) close(fence);
@@ -226,6 +244,10 @@ static void *render_loop(void *arg)
             continue;
         }
 
+        int fwait = vdrm_wait_fence(idx);
+        if (fwait < 0) {
+            LOGI("fence wait failed idx=%d ret=%d", idx, fwait);
+        }
         api.queueBuffer(c->win, anb, -1);
     }
 
@@ -385,6 +407,12 @@ Java_com_vdrm_consumer_Native_nativeCreate(JNIEnv *env, jclass clazz)
     if (!c) return 0;
     c->play_fd = -1;
     c->cap_fd = -1;
+
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = SIG_IGN;
+    sigaction(SIGUSR1, &sa, NULL);
+
     LOGI("instance %p created", (void *)c);
     return (jlong)(uintptr_t)c;
 }
@@ -402,6 +430,7 @@ Java_com_vdrm_consumer_Native_nativeDestroy(JNIEnv *env, jclass clazz, jlong han
     }
     if (c->running) {
         c->running = false;
+        pthread_kill(c->thread, SIGUSR1);
         pthread_join(c->thread, NULL);
     }
     if (c->win) {
@@ -428,6 +457,7 @@ Java_com_vdrm_consumer_Native_nativeStart(JNIEnv *env, jclass clazz, jlong handl
 
     if (c->running) {
         c->running = false;
+        pthread_kill(c->thread, SIGUSR1);
         pthread_join(c->thread, NULL);
     }
     if (c->audio_running) {
@@ -478,6 +508,7 @@ Java_com_vdrm_consumer_Native_nativeStop(JNIEnv *env, jclass clazz, jlong handle
 
     if (c->running) {
         c->running = false;
+        pthread_kill(c->thread, SIGUSR1);
         pthread_join(c->thread, NULL);
     }
     if (c->audio_running) {

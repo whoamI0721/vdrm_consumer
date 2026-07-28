@@ -18,7 +18,6 @@ public class VirtualKeyboardView extends View {
 
     private static final int BAR_W = 24;
     private static final int CTRL_GAP = 20;
-    private static final float ASPECT_MIN = 7f / 5f;
     private static final float ALPHA_MIN = 0.2f;
 
     private boolean showExtra = false;
@@ -126,6 +125,8 @@ public class VirtualKeyboardView extends View {
         dotPaint.setAntiAlias(true);
 
         dragSlop = ViewConfiguration.get(context).getScaledTouchSlop();
+
+        setLayerType(LAYER_TYPE_SOFTWARE, null);
 
         initRowData();
     }
@@ -410,7 +411,7 @@ public class VirtualKeyboardView extends View {
         int action = event.getActionMasked();
         float x = event.getX();
         float y = event.getY();
-        int touchPad = 30;
+        int touchPad = 10;
 
         if (action == MotionEvent.ACTION_CANCEL) {
             cancelAllStates();
@@ -440,6 +441,7 @@ public class VirtualKeyboardView extends View {
                     if (isDragging) {
                         setTranslationX(dragViewStartX + (x - dragDownX));
                         setTranslationY(dragViewStartY + (y - dragDownY));
+                        ((View) getParent()).invalidate();
                     }
                     return true;
                 case MotionEvent.ACTION_UP:
@@ -459,6 +461,7 @@ public class VirtualKeyboardView extends View {
                 case MotionEvent.ACTION_MOVE:
                     setTranslationX(dragViewStartX + (x - dragDownX));
                     setTranslationY(dragViewStartY + (y - dragDownY));
+                    ((View) getParent()).invalidate();
                     return true;
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_POINTER_UP:
@@ -540,13 +543,11 @@ public class VirtualKeyboardView extends View {
                         int newH = (int)(resizeStartH - (y - resizeStartY));
                         newW = clampW(newW);
                         newH = clampH(newH);
-                        if ((float)newW / newH < ASPECT_MIN) {
-                            newW = (int)(newH * ASPECT_MIN);
-                            newW = clampW(newW);
-                        }
+                        float oldH = kbH;
                         kbW = newW;
                         kbH = newH;
                         recomputeLayout();
+                        setTranslationY(getTranslationY() - (kbH - oldH));
                         invalidate();
                     }
                     return true;
