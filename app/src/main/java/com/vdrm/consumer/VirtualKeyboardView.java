@@ -127,8 +127,6 @@ public class VirtualKeyboardView extends View {
 
         dragSlop = ViewConfiguration.get(context).getScaledTouchSlop();
 
-        setLayerType(LAYER_TYPE_SOFTWARE, null);
-
         initRowData();
     }
 
@@ -448,7 +446,6 @@ public class VirtualKeyboardView extends View {
                     if (isDragging) {
                         setTranslationX(dragViewStartX + (px - dragDownX));
                         setTranslationY(dragViewStartY + (py - dragDownY));
-                        invalidate();
                     }
                     return true;
                 }
@@ -474,7 +471,6 @@ public class VirtualKeyboardView extends View {
                     float px = event.getX(idx), py = event.getY(idx);
                     setTranslationX(dragViewStartX + (px - dragDownX));
                     setTranslationY(dragViewStartY + (py - dragDownY));
-                    invalidate();
                     return true;
                 }
                 case MotionEvent.ACTION_UP:
