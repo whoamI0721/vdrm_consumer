@@ -491,6 +491,16 @@ Java_com_vdrm_consumer_Native_nativeStart(JNIEnv *env, jclass clazz, jlong handl
     c->buf_count = min_ud + 2;
     if (c->buf_count > MAX_BUFS) c->buf_count = MAX_BUFS;
 
+    /* Sanity check: can we lock/unlock (public API)? */
+    ANativeWindow_Buffer buf;
+    if (ANativeWindow_lock(c->win, &buf, NULL) == 0) {
+        LOGI("lock OK: %dx%d stride=%d fmt=%d bits=%p",
+             buf.width, buf.height, buf.stride, buf.format, buf.bits);
+        ANativeWindow_unlockAndPost(c->win);
+    } else {
+        LOGE("lock FAILED - surface may be invalid");
+    }
+
     LOGI("min_ud=%d buf_count=%d", min_ud, c->buf_count);
     int geo_ret = ANativeWindow_setBuffersGeometry(c->win, c->screen_w, c->screen_h,
                                      AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM);
