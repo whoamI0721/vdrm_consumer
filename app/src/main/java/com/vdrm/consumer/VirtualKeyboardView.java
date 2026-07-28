@@ -16,29 +16,36 @@ public class VirtualKeyboardView extends View {
     private boolean fnMode = false;
     private boolean shiftMode = false;
 
-    /* Drag state */
+    /* Layout constants */
+    private static final int DRAG_BAR_W = 80;
+    private static final int DRAG_BAR_H = 28;
+    private static final int ALPHA_BAR_W = 16;
+    private static final int DOT_R = 12;
+    private static final float ASPECT_MIN = 7f / 5f;
+
+    /* State */
+    private boolean showExtra = false;   /* show alpha bar + resize dot */
+    private float kbAlpha = 1.0f;
+    private int baseW, baseH;           /* default keyboard size */
+    private int kbW, kbH;               /* current keyboard size */
+    private int screenW, screenH;
+
+    /* Drag (move keyboard) */
     private boolean isDragging = false;
     private float dragStartX, dragStartY;
     private float dragViewStartX, dragViewStartY;
-    private static final int DRAG_HANDLE_H = 28;
 
-    /* Resize state */
+    /* Resize */
     private boolean isResizing = false;
     private float resizeStartX, resizeStartY;
-    private float resizeStartScale;
-    private static final int RESIZE_HANDLE = 40;
+    private int resizeStartW, resizeStartH;
 
-    /* Transparency state */
+    /* Alpha */
     private boolean isAdjustingAlpha = false;
-    private float alphaStartY;
-    private float alphaStartValue;
-    private static final int ALPHA_BAR_W = 16;
-    private float kbAlpha = 1.0f;
+    private float alphaStartY, alphaStartVal;
 
-    /* Scale */
-    private float kbScale = 1.0f;
-    private static final float SCALE_MIN = 0.5f;
-    private static final float SCALE_MAX = 1.5f;
+    /* Paints created once */
+    private Paint linePaint, resizeDotPaint, alphaBgPaint, alphaFillPaint, alphaLinePaint;
 
     private int[] rowKeyCount;
     private int[] rowWideCount;
@@ -122,6 +129,27 @@ public class VirtualKeyboardView extends View {
         handlePaint.setColor(0xFF505050);
         handlePaint.setStyle(Paint.Style.FILL);
 
+        linePaint = new Paint();
+        linePaint.setColor(0xFF808080);
+        linePaint.setStrokeWidth(3);
+
+        resizeDotPaint = new Paint();
+        resizeDotPaint.setColor(0xFF606060);
+        resizeDotPaint.setStyle(Paint.Style.FILL);
+        resizeDotPaint.setAntiAlias(true);
+
+        alphaBgPaint = new Paint();
+        alphaBgPaint.setColor(0xFF303030);
+        alphaBgPaint.setStyle(Paint.Style.FILL);
+
+        alphaFillPaint = new Paint();
+        alphaFillPaint.setColor(0xFF8080FF);
+        alphaFillPaint.setStyle(Paint.Style.FILL);
+
+        alphaLinePaint = new Paint();
+        alphaLinePaint.setColor(Color.WHITE);
+        alphaLinePaint.setStrokeWidth(2);
+
         initRowData();
     }
 
@@ -142,92 +170,96 @@ public class VirtualKeyboardView extends View {
         }
     }
 
+    public void setScreenSize(int w, int h) {
+        screenW = w;
+        screenH = h;
+        baseW = w * 4 / 5;
+        baseH = h * 1 / 2;
+        if (baseW > w / 2) baseW = w / 2;
+        if (baseH > h / 2) baseH = h / 2;
+        kbW = baseW;
+        kbH = baseH;
+    }
+
     @Override
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
         int parentW = MeasureSpec.getSize(widthMeasureSpec);
         int parentH = MeasureSpec.getSize(heightMeasureSpec);
+        if (screenW == 0) setScreenSize(parentW, parentH);
+
         int gap = KEY_GAP;
         int rows = KEYS.length;
 
-        /* Size: 4/5 screen width, 1/2 screen height, scaled by kbScale */
-        int targetW = (int)(parentW * 4 / 5 * kbScale);
-        int targetH = (int)(parentH * 1 / 2 * kbScale);
+        keyH = (kbH - DRAG_BAR_H - 10 - (rows - 1) * gap) / rows;
+        if (keyH < 40) keyH = 40;
 
-        keyH = (targetH - 10 - (rows - 1) * gap) / rows;
-        if (keyH < 50) keyH = 50;
-
-        /* Calculate per-row key widths */
         rowKeyWidth = new int[rows];
         rowWideWidth = new int[rows];
         for (int r = 0; r < rows; r++) {
             int n = rowKeyCount[r] - rowWideCount[r];
             int wc = rowWideCount[r];
-            int avail = targetW - (rowKeyCount[r] - 1) * gap;
+            int avail = kbW - (rowKeyCount[r] - 1) * gap;
             int totalU = n + wc * 2;
             int unit = avail / totalU;
             rowKeyWidth[r] = unit;
             rowWideWidth[r] = unit * 2 + gap;
         }
-        totalH = DRAG_HANDLE_H + 10 + rows * keyH + (rows - 1) * gap;
+        totalH = DRAG_BAR_H + 10 + rows * keyH + (rows - 1) * gap;
 
-        setMeasuredDimension(targetW + ALPHA_BAR_W, totalH);
+        setMeasuredDimension(kbW + (showExtra ? ALPHA_BAR_W : 0), totalH);
     }
 
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
-        int w = getWidth();
-        int keyW = w - ALPHA_BAR_W;
-        canvas.save();
-        canvas.concat(getMatrix());
+        int keyW = kbW;
+
+        /* Background */
         canvas.drawRect(0, 0, keyW, totalH, bgPaint);
 
-        /* Draw drag handle bar */
-        RectF handle = new RectF(0, 0, keyW, DRAG_HANDLE_H);
-        canvas.drawRoundRect(handle, 5, 5, handlePaint);
-        /* Center line on handle */
-        Paint linePaint = new Paint();
-        linePaint.setColor(0xFF808080);
-        linePaint.setStrokeWidth(3);
-        canvas.drawLine(keyW / 2f - 30, DRAG_HANDLE_H / 2f,
-                         keyW / 2f + 30, DRAG_HANDLE_H / 2f, linePaint);
+        /* Drag bar (always visible, centered at top) */
+        int dragBarX = (keyW - DRAG_BAR_W) / 2;
+        RectF dragBar = new RectF(dragBarX, 0, dragBarX + DRAG_BAR_W, DRAG_BAR_H);
+        canvas.drawRoundRect(dragBar, 5, 5, handlePaint);
+        /* Center line on drag bar */
+        canvas.drawLine(dragBar.centerX() - 15, DRAG_BAR_H / 2f,
+                         dragBar.centerX() + 15, DRAG_BAR_H / 2f, linePaint);
 
-        /* Draw resize handle (top-right corner, small triangle) */
-        Paint resizePaint = new Paint();
-        resizePaint.setColor(0xFF606060);
-        resizePaint.setStyle(Paint.Style.FILL);
-        resizePaint.setAntiAlias(true);
-        Path triPath = new Path();
-        triPath.moveTo(keyW - RESIZE_HANDLE, 0);
-        triPath.lineTo(keyW, 0);
-        triPath.lineTo(keyW, RESIZE_HANDLE);
-        triPath.close();
-        canvas.drawPath(triPath, resizePaint);
+        if (showExtra) {
+            /* Resize dot (top-right corner of keyboard area) */
+            float dotX = keyW - DOT_R;
+            float dotY = DOT_R;
+            canvas.drawCircle(dotX, dotY, DOT_R, resizeDotPaint);
+            /* Small inner circle for visibility */
+            Paint innerPaint = new Paint();
+            innerPaint.setColor(0xFF909090);
+            innerPaint.setStyle(Paint.Style.FILL);
+            innerPaint.setAntiAlias(true);
+            canvas.drawCircle(dotX, dotY, DOT_R * 0.4f, innerPaint);
 
-        /* Draw alpha bar (right side) */
-        Paint alphaBgPaint = new Paint();
-        alphaBgPaint.setColor(0xFF303030);
-        alphaBgPaint.setStyle(Paint.Style.FILL);
-        canvas.drawRect(keyW, 0, w, totalH, alphaBgPaint);
-        /* Alpha fill */
-        Paint alphaFillPaint = new Paint();
-        alphaFillPaint.setColor(0xFF8080FF);
-        alphaFillPaint.setStyle(Paint.Style.FILL);
-        float alphaY = totalH * (1 - kbAlpha);
-        canvas.drawRect(keyW, alphaY, w, totalH, alphaFillPaint);
-        /* Alpha indicator line */
-        Paint alphaLinePaint = new Paint();
-        alphaLinePaint.setColor(Color.WHITE);
-        alphaLinePaint.setStrokeWidth(2);
-        canvas.drawLine(keyW, alphaY, w, alphaY, alphaLinePaint);
+            /* Alpha bar (right side, vertical) */
+            int alphaBarX = keyW;
+            canvas.drawRect(alphaBarX, 0, keyW + ALPHA_BAR_W, totalH, alphaBgPaint);
+            /* Alpha fill */
+            float alphaY = totalH * (1 - kbAlpha);
+            canvas.drawRect(alphaBarX, alphaY, keyW + ALPHA_BAR_W, totalH, alphaFillPaint);
+            /* Alpha indicator line */
+            canvas.drawLine(alphaBarX, alphaY, keyW + ALPHA_BAR_W, alphaY, alphaLinePaint);
+            /* Small circle on the alpha bar indicator */
+            Paint alphaDotPaint = new Paint();
+            alphaDotPaint.setColor(Color.WHITE);
+            alphaDotPaint.setStyle(Paint.Style.FILL);
+            alphaDotPaint.setAntiAlias(true);
+            canvas.drawCircle(alphaBarX + ALPHA_BAR_W / 2f, alphaY, 5, alphaDotPaint);
+        }
 
+        /* Keys */
         int gap = KEY_GAP;
         for (int r = 0; r < KEYS.length; r++) {
-            int y = DRAG_HANDLE_H + 10 + r * (keyH + gap);
+            int y = DRAG_BAR_H + 10 + r * (keyH + gap);
             int kw = rowKeyWidth[r];
             int ww = rowWideWidth[r];
 
-            /* Calculate actual row width and center it */
             int rowW = 0;
             for (int i = 0; i < KEYS[r].length; i += 4) {
                 String label = KEYS[r][i];
@@ -252,7 +284,6 @@ public class VirtualKeyboardView extends View {
                 RectF rect = new RectF(x, y, x + kx, y + keyH);
                 canvas.drawRoundRect(rect, 5, 5, idx == pressedKey ? pressPaint : keyPaint);
 
-                /* Determine display label */
                 String display = label;
                 if (isFnKey) {
                     display = FN_ROW0[c * 2];
@@ -260,12 +291,10 @@ public class VirtualKeyboardView extends View {
                     display = shiftLabel;
                 }
 
-                /* Main label */
                 float mainSize = isWide ? 36 : Math.min(48, kw * 0.58f);
                 textPaint.setTextSize(mainSize);
                 canvas.drawText(display, rect.centerX(), rect.centerY() + mainSize * 0.35f, textPaint);
 
-                /* Fn hint at top */
                 if (r == 0 && !fnMode && c * 2 < FN_ROW0.length && FN_ROW0[c * 2] != null) {
                     float fnSize = Math.min(22, kw * 0.28f);
                     textPaint.setTextSize(fnSize);
@@ -288,174 +317,124 @@ public class VirtualKeyboardView extends View {
         return Integer.parseInt(baseCode);
     }
 
+    private int clampW(int w) {
+        int maxW = screenW / 2;
+        return Math.max(200, Math.min(maxW, w));
+    }
+
+    private int clampH(int h) {
+        int maxH = screenH / 2;
+        return Math.max(150, Math.min(maxH, h));
+    }
+
     @Override
     public boolean onTouchEvent(MotionEvent event) {
         int action = event.getActionMasked();
         float x = event.getX();
         float y = event.getY();
-        int keyW = getWidth() - ALPHA_BAR_W;
+        int keyW = kbW;
 
-        /* Resize handle: top-right corner */
-        if (x >= keyW - RESIZE_HANDLE && y <= RESIZE_HANDLE && pressedKey < 0) {
+        /* === Drag bar touch (always active) === */
+        int dragBarX = (keyW - DRAG_BAR_W) / 2;
+        if (x >= dragBarX && x <= dragBarX + DRAG_BAR_W && y <= DRAG_BAR_H) {
+            switch (action) {
+                case MotionEvent.ACTION_DOWN:
+                    return true; /* consume, wait for UP to decide tap vs drag */
+                case MotionEvent.ACTION_MOVE:
+                    if (!isDragging && Math.abs(x - dragBarX - DRAG_BAR_W / 2f) > 10) {
+                        isDragging = true;
+                        dragStartX = x;
+                        dragStartY = y;
+                        dragViewStartX = getTranslationX();
+                        dragViewStartY = getTranslationY();
+                    }
+                    if (isDragging) {
+                        setTranslationX(dragViewStartX + (x - dragStartX));
+                        setTranslationY(dragViewStartY + (y - dragStartY));
+                    }
+                    return true;
+                case MotionEvent.ACTION_UP:
+                    if (!isDragging) {
+                        /* Tap: toggle extra controls */
+                        showExtra = !showExtra;
+                        requestLayout();
+                        invalidate();
+                    }
+                    isDragging = false;
+                    return true;
+            }
+        }
+
+        if (isDragging) {
+            if (action == MotionEvent.ACTION_MOVE) {
+                setTranslationX(dragViewStartX + (x - dragStartX));
+                setTranslationY(dragViewStartY + (y - dragStartY));
+                return true;
+            }
+            isDragging = false;
+            return true;
+        }
+
+        if (!showExtra) return true;
+
+        /* === Resize dot touch === */
+        float dotX = keyW - DOT_R;
+        float dotY = DOT_R;
+        float dx = x - dotX, dy = y - dotY;
+        if (dx * dx + dy * dy <= (DOT_R + 10) * (DOT_R + 10)) {
             switch (action) {
                 case MotionEvent.ACTION_DOWN:
                     isResizing = true;
                     resizeStartX = x;
                     resizeStartY = y;
-                    resizeStartScale = kbScale;
+                    resizeStartW = kbW;
+                    resizeStartH = kbH;
                     return true;
                 case MotionEvent.ACTION_MOVE:
                     if (isResizing) {
-                        float dx = x - resizeStartX;
-                        float dy = y - resizeStartY;
-                        float delta = (dx + dy) / 200f;
-                        kbScale = Math.max(SCALE_MIN, Math.min(SCALE_MAX, resizeStartScale + delta));
+                        int newW = (int)(resizeStartW + (x - resizeStartX));
+                        int newH = (int)(resizeStartH + (y - resizeStartY));
+                        newW = clampW(newW);
+                        newH = clampH(newH);
+                        /* Enforce aspect ratio >= 7/5 */
+                        if ((float)newW / newH < ASPECT_MIN) {
+                            newW = (int)(newH * ASPECT_MIN);
+                            newW = clampW(newW);
+                        }
+                        kbW = newW;
+                        kbH = newH;
                         requestLayout();
                         invalidate();
-                        return true;
                     }
-                    break;
+                    return true;
                 case MotionEvent.ACTION_UP:
-                case MotionEvent.ACTION_CANCEL:
-                    if (isResizing) {
-                        isResizing = false;
-                        return true;
-                    }
-                    break;
+                    isResizing = false;
+                    return true;
             }
         }
 
-        /* Alpha bar: right side strip */
-        if (x >= keyW && pressedKey < 0) {
+        /* === Alpha bar touch === */
+        if (x >= keyW && showExtra) {
             switch (action) {
                 case MotionEvent.ACTION_DOWN:
                     isAdjustingAlpha = true;
                     alphaStartY = y;
-                    alphaStartValue = kbAlpha;
+                    alphaStartVal = kbAlpha;
                     return true;
                 case MotionEvent.ACTION_MOVE:
                     if (isAdjustingAlpha) {
-                        float dy = alphaStartY - y;
-                        kbAlpha = Math.max(0.1f, Math.min(1.0f, alphaStartValue + dy / totalH));
+                        float dy2 = alphaStartY - y;
+                        kbAlpha = Math.max(0.1f, Math.min(1.0f, alphaStartVal + dy2 / totalH));
                         setAlpha(kbAlpha);
                         invalidate();
-                        return true;
                     }
-                    break;
-                case MotionEvent.ACTION_UP:
-                case MotionEvent.ACTION_CANCEL:
-                    if (isAdjustingAlpha) {
-                        isAdjustingAlpha = false;
-                        return true;
-                    }
-                    break;
-            }
-        }
-
-        /* Drag handle: top portion of the keyboard (excluding resize corner) */
-        if (y <= DRAG_HANDLE_H && pressedKey < 0) {
-            switch (action) {
-                case MotionEvent.ACTION_DOWN:
-                    isDragging = true;
-                    dragStartX = x;
-                    dragStartY = y;
-                    dragViewStartX = getTranslationX();
-                    dragViewStartY = getTranslationY();
                     return true;
-                case MotionEvent.ACTION_MOVE:
-                    if (isDragging) {
-                        setTranslationX(dragViewStartX + (x - dragStartX));
-                        setTranslationY(dragViewStartY + (y - dragStartY));
-                        return true;
-                    }
-                    break;
                 case MotionEvent.ACTION_UP:
-                case MotionEvent.ACTION_CANCEL:
-                    if (isDragging) {
-                        isDragging = false;
-                        return true;
-                    }
-                    break;
+                    isAdjustingAlpha = false;
+                    return true;
             }
         }
-        if (isDragging) {
-            isDragging = false;
-        }
 
-        int r = (int)((y - DRAG_HANDLE_H - 10) / (keyH + KEY_GAP));
-        if (r < 0 || r >= KEYS.length) return true;
-
-        int cx = (int)x;
-        /* Calculate startX for this row (same as onDraw) */
-        int rowW = 0, kw0 = rowKeyWidth[r], ww0 = rowWideWidth[r];
-        for (int i = 0; i < KEYS[r].length; i += 4) {
-            String label = KEYS[r][i];
-            if (label == null) continue;
-            rowW += (label.length() > 3 ? ww0 : kw0) + KEY_GAP;
-        }
-        rowW -= KEY_GAP;
-        int startX = (keyW - rowW) / 2;
-
-        int c = -1, xPos = startX;
-        for (int i = 0; i < KEYS[r].length; i += 4) {
-            String label = KEYS[r][i];
-            if (label == null) continue;
-            int kw = label.length() > 3 ? ww0 : kw0;
-            if (cx >= xPos && cx < xPos + kw) { c = i / 4; break; }
-            xPos += kw + KEY_GAP;
-        }
-        if (c < 0) return true;
-        String codeStr = KEYS[r][c * 4 + 1];
-
-        switch (action) {
-            case MotionEvent.ACTION_DOWN:
-            case MotionEvent.ACTION_MOVE: {
-                int newIdx = r * 20 + c;
-                if (newIdx != pressedKey) {
-                    if (pressedKey >= 0) {
-                        int pr = pressedKey / 20;
-                        int pc = pressedKey % 20;
-                        if (pc * 4 < KEYS[pr].length && KEYS[pr][pc * 4] != null) {
-                            String oldCode = KEYS[pr][pc * 4 + 1];
-                            if (!isSpecial(oldCode)) {
-                                int uc = resolveCode(pr, pc, oldCode);
-                                Native.nativeSendKey(uc, false);
-                            }
-                        }
-                    }
-                    pressedKey = newIdx;
-                    if (!isSpecial(codeStr)) {
-                        int sc = resolveCode(r, c, codeStr);
-                        Native.nativeSendKey(sc, true);
-                    }
-                    invalidate();
-                }
-                break;
-            }
-            case MotionEvent.ACTION_UP: {
-                if (pressedKey >= 0) {
-                    int pr = pressedKey / 20;
-                    int pc = pressedKey % 20;
-                    if (pc * 4 < KEYS[pr].length) {
-                        String upCode = KEYS[pr][pc * 4 + 1];
-                        if (upCode.equals("--") && pressedKey == r * 20 + c) {
-                            setVisibility(GONE);
-                        } else if (upCode.equals("-1")) {
-                            fnMode = !fnMode;
-                        } else if (upCode.equals("-2")) {
-                            shiftMode = !shiftMode;
-                            Native.nativeSendKey(42, shiftMode);
-                        } else if (!upCode.equals("--")) {
-                            int uc = resolveCode(pr, pc, upCode);
-                            Native.nativeSendKey(uc, false);
-                        }
-                    }
-                }
-                pressedKey = -1;
-                invalidate();
-                break;
-            }
-        }
         return true;
     }
 }
