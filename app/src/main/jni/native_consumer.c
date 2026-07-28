@@ -101,13 +101,18 @@ static int vdrm_submit(int dmabuf_fd)
     int len = snprintf(path, sizeof(path), VDRM_MAGIC "/submit/%d", dmabuf_fd);
     if (len <= 0) return -EINVAL;
 
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) {
-        LOGE("submit open failed: %s", strerror(errno));
-        return -errno;
+    for (int i = 0; i < 50; i++) {
+        int fd = open(path, O_RDONLY);
+        if (fd >= 0) { close(fd); return 0; }
+        int err = errno;
+        if (err != EAGAIN) {
+            LOGE("submit open failed: %s", strerror(err));
+            return -err;
+        }
+        usleep(20000);
     }
-    close(fd);
-    return 0;
+    LOGE("submit EAGAIN timeout");
+    return -EAGAIN;
 }
 
 static int vdrm_present(int idx)
