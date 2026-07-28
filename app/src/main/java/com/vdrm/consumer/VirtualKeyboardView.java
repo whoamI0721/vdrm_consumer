@@ -10,10 +10,16 @@ import android.view.View;
 
 public class VirtualKeyboardView extends View {
 
-    private Paint bgPaint, keyPaint, textPaint, pressPaint;
+    private Paint bgPaint, keyPaint, textPaint, pressPaint, handlePaint;
     private int pressedKey = -1;
     private boolean fnMode = false;
     private boolean shiftMode = false;
+
+    /* Drag state */
+    private boolean isDragging = false;
+    private float dragStartX, dragStartY;
+    private float dragViewStartX, dragViewStartY;
+    private static final int DRAG_HANDLE_H = 28;
 
     private int[] rowKeyCount;
     private int[] rowWideCount;
@@ -93,6 +99,10 @@ public class VirtualKeyboardView extends View {
         textPaint.setTextAlign(Paint.Align.CENTER);
         textPaint.setAntiAlias(true);
 
+        handlePaint = new Paint();
+        handlePaint.setColor(0xFF505050);
+        handlePaint.setStyle(Paint.Style.FILL);
+
         initRowData();
     }
 
@@ -139,7 +149,7 @@ public class VirtualKeyboardView extends View {
             rowKeyWidth[r] = unit;
             rowWideWidth[r] = unit * 2 + gap;
         }
-        totalH = 10 + rows * keyH + (rows - 1) * gap;
+        totalH = DRAG_HANDLE_H + 10 + rows * keyH + (rows - 1) * gap;
 
         setMeasuredDimension(targetW, totalH);
     }
@@ -150,9 +160,19 @@ public class VirtualKeyboardView extends View {
         int w = getWidth();
         canvas.drawRect(0, 0, w, totalH, bgPaint);
 
+        /* Draw drag handle bar */
+        RectF handle = new RectF(0, 0, w, DRAG_HANDLE_H);
+        canvas.drawRoundRect(handle, 5, 5, handlePaint);
+        /* Center line on handle */
+        Paint linePaint = new Paint();
+        linePaint.setColor(0xFF808080);
+        linePaint.setStrokeWidth(3);
+        canvas.drawLine(w / 2f - 30, DRAG_HANDLE_H / 2f,
+                         w / 2f + 30, DRAG_HANDLE_H / 2f, linePaint);
+
         int gap = KEY_GAP;
         for (int r = 0; r < KEYS.length; r++) {
-            int y = 10 + r * (keyH + gap);
+            int y = DRAG_HANDLE_H + 10 + r * (keyH + gap);
             int kw = rowKeyWidth[r];
             int ww = rowWideWidth[r];
 
@@ -222,7 +242,38 @@ public class VirtualKeyboardView extends View {
         int action = event.getActionMasked();
         float x = event.getX();
         float y = event.getY();
-        int r = (int)((y - 10) / (keyH + KEY_GAP));
+
+        /* Drag handle: top portion of the keyboard */
+        if (y <= DRAG_HANDLE_H && pressedKey < 0) {
+            switch (action) {
+                case MotionEvent.ACTION_DOWN:
+                    isDragging = true;
+                    dragStartX = x;
+                    dragStartY = y;
+                    dragViewStartX = getTranslationX();
+                    dragViewStartY = getTranslationY();
+                    return true;
+                case MotionEvent.ACTION_MOVE:
+                    if (isDragging) {
+                        setTranslationX(dragViewStartX + (x - dragStartX));
+                        setTranslationY(dragViewStartY + (y - dragStartY));
+                        return true;
+                    }
+                    break;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    if (isDragging) {
+                        isDragging = false;
+                        return true;
+                    }
+                    break;
+            }
+        }
+        if (isDragging) {
+            isDragging = false;
+        }
+
+        int r = (int)((y - DRAG_HANDLE_H - 10) / (keyH + KEY_GAP));
         if (r < 0 || r >= KEYS.length) return true;
 
         int cx = (int)x;
