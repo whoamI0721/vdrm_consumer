@@ -328,13 +328,15 @@ public class VirtualKeyboardView extends View {
         float x = event.getX();
         float y = event.getY();
 
-        /* === Drag bar touch === */
-        if (x >= dragBarLeft && x <= dragBarRight && y >= dragBarY && y <= dragBarY + BAR_W) {
+        /* === Drag bar touch (with generous touch padding) === */
+        int dragTouchPad = 20;
+        if (x >= dragBarLeft && x <= dragBarRight
+                && y >= dragBarY - dragTouchPad && y <= dragBarY + BAR_W + dragTouchPad) {
             switch (action) {
                 case MotionEvent.ACTION_DOWN:
                     return true;
                 case MotionEvent.ACTION_MOVE:
-                    if (!isDragging && Math.abs(x - (dragBarLeft + dragBarRight) / 2f) > 10) {
+                    if (!isDragging && Math.abs(x - (dragBarLeft + dragBarRight) / 2f) > 5) {
                         isDragging = true;
                         dragStartX = x;
                         dragStartY = y;
