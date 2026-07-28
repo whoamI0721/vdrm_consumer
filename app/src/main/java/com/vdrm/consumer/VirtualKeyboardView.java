@@ -54,6 +54,8 @@ public class VirtualKeyboardView extends View {
     private int[] rowWideWidth;
     private int keyH;
     private int keyAreaH;
+    private int initKeyH;
+    private int initKeyAreaH;
 
     /* [label, code, shiftLabel or null, shiftCode or null] */
     private static final String[][] KEYS = {
@@ -191,6 +193,12 @@ public class VirtualKeyboardView extends View {
 
         keyAreaH = rows * keyH + (rows - 1) * gap;
 
+        /* Store initial dimensions on first measure */
+        if (initKeyH == 0) {
+            initKeyH = keyH;
+            initKeyAreaH = keyAreaH;
+        }
+
         /* Layout positions — fixed gaps, not scaling */
         dragBarY = CTRL_GAP;
         keyAreaTop = dragBarY + BAR_W + CTRL_GAP;
@@ -199,8 +207,8 @@ public class VirtualKeyboardView extends View {
         dragBarLeft = (kbW - dragBarWidth) / 2;
         dragBarRight = dragBarLeft + dragBarWidth;
 
-        /* Alpha bar: shorter by half a key height, bottom-aligned with keyboard */
-        int alphaBarH = keyAreaH - keyH / 2;
+        /* Alpha bar: proportionally shorter by half initial key height, bottom-aligned */
+        int alphaBarH = keyAreaH - (int)(initKeyH * 0.5f * keyAreaH / (float) initKeyAreaH);
         alphaBarX = kbW + CTRL_GAP;
         alphaBarBottom = keyAreaTop + keyAreaH;
         alphaBarTop = alphaBarBottom - alphaBarH;
