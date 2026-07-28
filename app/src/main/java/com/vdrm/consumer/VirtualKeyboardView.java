@@ -125,6 +125,8 @@ public class VirtualKeyboardView extends View {
         dotPaint.setStyle(Paint.Style.FILL);
         dotPaint.setAntiAlias(true);
 
+        setLayerType(View.LAYER_TYPE_HARDWARE, null);
+
         addOnLayoutChangeListener((v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
             float dx = left - oldLeft;
             float dy = top - oldTop;
@@ -470,9 +472,11 @@ public class VirtualKeyboardView extends View {
                     setTranslationY(dragViewStartY + (y - dragDownY));
                     return true;
                 case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_POINTER_UP:
                     isDragging = false;
                     return true;
             }
+            return true;
         }
 
         /* === Key input (always active when not on controls) === */
@@ -512,7 +516,6 @@ public class VirtualKeyboardView extends View {
                     return true;
             }
         } else {
-            /* Finger moved off all keys */
             if (action == MotionEvent.ACTION_MOVE && pressedKey >= 0) {
                 int pr = pressedKey / 20;
                 int pCol = pressedKey % 20;
@@ -524,7 +527,6 @@ public class VirtualKeyboardView extends View {
                 clearPressedKey();
                 invalidate();
             }
-            if (action == MotionEvent.ACTION_MOVE) return true;
         }
 
         if (!showExtra) {
@@ -545,8 +547,8 @@ public class VirtualKeyboardView extends View {
                     return true;
                 case MotionEvent.ACTION_MOVE:
                     if (isResizing) {
-                        int newW = (int)(resizeStartW + (x - resizeStartX) * 0.5f);
-                        int newH = (int)(resizeStartH - (y - resizeStartY) * 0.5f);
+                        int newW = (int)(resizeStartW + (x - resizeStartX) * 0.6f);
+                        int newH = (int)(resizeStartH - (y - resizeStartY) * 0.6f);
                         newW = clampW(newW);
                         newH = clampH(newH);
                         if ((float)newW / newH < ASPECT_MIN) {
@@ -579,10 +581,7 @@ public class VirtualKeyboardView extends View {
                 case MotionEvent.ACTION_MOVE:
                     if (isAdjustingAlpha) {
                         float dy2 = (alphaStartY - y) / (alphaBarBottom - alphaBarTop);
-                        float mid = (ALPHA_MIN + 1.0f) * 0.5f;
-                        float dist = Math.abs(alphaStartVal - mid) / (1.0f - mid);
-                        float damp = 1.0f - 0.85f * dist * dist;
-                        kbAlpha = Math.max(ALPHA_MIN, Math.min(1.0f, alphaStartVal + dy2 * damp));
+                        kbAlpha = Math.max(ALPHA_MIN, Math.min(1.0f, alphaStartVal + dy2));
                         setAlpha(kbAlpha);
                         invalidate();
                     }
