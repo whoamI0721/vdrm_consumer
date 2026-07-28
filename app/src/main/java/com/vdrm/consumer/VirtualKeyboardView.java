@@ -562,20 +562,26 @@ public class VirtualKeyboardView extends View {
                         kbW = newW;
                         kbH = newH;
                         recomputeLayout();
-                        setTranslationY(getTranslationY() - (kbH - oldH));
+                        int newTotalW = alphaBarX + BAR_W + (int) dotR;
+                        int newTotalH = keyAreaTop + keyAreaH + (int) dotR;
+                        if (newTotalW != getMeasuredWidth() || newTotalH != getMeasuredHeight()) {
+                            setMeasuredDimension(newTotalW, newTotalH);
+                            requestLayout();
+                        }
+                        offsetTopAndBottom(-(int)(kbH - oldH));
                         invalidate();
                     }
                     return true;
                 case MotionEvent.ACTION_UP:
                     isResizing = false;
-                    int oldLeft = getLeft();
-                    int oldTop = getTop();
-                    requestLayout();
-                    invalidate();
-                    post(() -> {
-                        setTranslationX(getTranslationX() - (getLeft() - oldLeft));
-                        setTranslationY(getTranslationY() - (getTop() - oldTop));
-                    });
+                    {
+                        int oldLeft = getLeft();
+                        int oldTop = getTop();
+                        requestLayout();
+                        invalidate();
+                        post(() -> offsetLeftAndRight(oldLeft - getLeft()));
+                        post(() -> offsetTopAndBottom(oldTop - getTop()));
+                    }
                     return true;
             }
         }
