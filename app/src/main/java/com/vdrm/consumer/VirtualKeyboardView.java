@@ -218,8 +218,9 @@ public class VirtualKeyboardView extends View {
         dotCY = dragBarY + BAR_W / 2f;
         dotR = BAR_W * 0.75f;
 
-        int totalW = alphaBarX + BAR_W;
-        int totalH = keyAreaTop + keyAreaH;
+        /* View size: include padding for dots to avoid clipping */
+        int totalW = alphaBarX + BAR_W + (int) dotR;
+        int totalH = keyAreaTop + keyAreaH + (int) dotR;
 
         setMeasuredDimension(totalW, totalH);
     }
@@ -329,9 +330,9 @@ public class VirtualKeyboardView extends View {
         float y = event.getY();
 
         /* === Drag bar touch (with generous touch padding) === */
-        int dragTouchPad = 20;
+        int touchPad = 30;  /* 1.5x sensitivity */
         if (x >= dragBarLeft && x <= dragBarRight
-                && y >= dragBarY - dragTouchPad && y <= dragBarY + BAR_W + dragTouchPad) {
+                && y >= dragBarY - touchPad && y <= dragBarY + BAR_W + touchPad) {
             switch (action) {
                 case MotionEvent.ACTION_DOWN:
                     return true;
@@ -373,7 +374,7 @@ public class VirtualKeyboardView extends View {
 
         /* === Resize dot touch === */
         float dx = x - dotCX, dy = y - dotCY;
-        if (dx * dx + dy * dy <= (dotR + 10) * (dotR + 10)) {
+        if (dx * dx + dy * dy <= (dotR + touchPad) * (dotR + touchPad)) {
             switch (action) {
                 case MotionEvent.ACTION_DOWN:
                     isResizing = true;
@@ -405,7 +406,8 @@ public class VirtualKeyboardView extends View {
         }
 
         /* === Alpha bar touch === */
-        if (x >= alphaBarX && x <= alphaBarX + BAR_W && y >= alphaBarTop && y <= alphaBarBottom) {
+        if (x >= alphaBarX - touchPad && x <= alphaBarX + BAR_W + touchPad
+                && y >= alphaBarTop - touchPad && y <= alphaBarBottom + touchPad) {
             switch (action) {
                 case MotionEvent.ACTION_DOWN:
                     isAdjustingAlpha = true;
