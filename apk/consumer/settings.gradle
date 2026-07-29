@@ -1,0 +1,2 @@
+rootProject.name = 'vdrm_consumer'
+include ':app'
