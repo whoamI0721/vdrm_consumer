@@ -288,14 +288,19 @@ static void *audio_play_thread(void *arg)
 
     LOGI("audio play thread started");
 
+    int frame_size = AAudioStream_getBytesPerSample(c->play_stream)
+                     * AAudioStream_getChannelCount(c->play_stream);
     short buf[960 * 2];
+    int write_count = 0;
     while (c->audio_running) {
         struct pollfd pfd = { .fd = fd, .events = POLLIN };
         int pr = poll(&pfd, 1, 200);
         if (pr <= 0) continue;
         int n = read(fd, buf, sizeof(buf));
         if (n > 0) {
-            AAudioStream_write(c->play_stream, buf, n / sizeof(short), 20000000LL);
+            aaudio_result_t wr = AAudioStream_write(c->play_stream, buf, n / frame_size, 500000000LL);
+            if (++write_count % 50 == 1)
+                LOGI("audio wrote %d frames (ret=%d)", n / frame_size, wr);
         } else if (n == 0) {
             usleep(10000);
         } else if (n < 0 && errno != EINTR) {
