@@ -288,8 +288,9 @@ static void *audio_play_thread(void *arg)
 
     LOGI("audio play thread started");
 
-    int frame_size = AAudioStream_getBytesPerSample(c->play_stream)
-                     * AAudioStream_getChannelCount(c->play_stream);
+    aaudio_format_t fmt = AAudioStream_getFormat(c->play_stream);
+    int bytes_per_sample = (fmt == AAUDIO_FORMAT_PCM_FLOAT) ? 4 : 2;
+    int frame_size = bytes_per_sample * AAudioStream_getChannelCount(c->play_stream);
     short buf[960 * 2];
     int write_count = 0;
     while (c->audio_running) {
