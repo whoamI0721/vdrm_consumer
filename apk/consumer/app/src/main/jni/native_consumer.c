@@ -528,6 +528,7 @@ Java_com_vdrm_consumer_Native_nativeStart(JNIEnv *env, jclass clazz, jlong handl
     pthread_create(&c->thread, NULL, render_loop, c);
 
     /* Initialize AAudio output stream (outside thread, so errors are visible) */
+    LOGI("audio init: play_stream=%p audio_running=%d", (void*)c->play_stream, c->audio_running);
     if (!c->play_stream) {
         AAudioStreamBuilder *bld = NULL;
         aaudio_result_t ar = AAudio_createStreamBuilder(&bld);
