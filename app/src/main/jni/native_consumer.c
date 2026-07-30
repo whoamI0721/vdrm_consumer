@@ -90,7 +90,8 @@ struct consumer {
     volatile bool audio_running;
     int play_fd;
     int cap_fd;
-    AAudioStream *play_stream;   /* pre-initialized output stream */
+    AAudioStream *play_stream;
+    AAudioStream *cap_stream;
 };
 
 static struct anw_api api;
@@ -278,7 +279,6 @@ static void *audio_play_thread(void *arg)
     if (fd < 0) { LOGE("audio play open failed"); return NULL; }
     c->play_fd = fd;
 
-    /* AAudio stream already initialized by nativeStart, stored in c->play_stream */
     if (!c->play_stream) {
         LOGE("audio play stream not initialized");
         close(fd);
@@ -288,11 +288,14 @@ static void *audio_play_thread(void *arg)
 
     LOGI("audio play thread started");
 
-    short buf[960 * 2]; /* 10ms @ 48kHz stereo */
+    short buf[960 * 2];
     while (c->audio_running) {
+        struct pollfd pfd = { .fd = fd, .events = POLLIN };
+        int pr = poll(&pfd, 1, 200);
+        if (pr <= 0) continue;
         int n = read(fd, buf, sizeof(buf));
         if (n > 0) {
-            AAudioStream_write(c->play_stream, buf, n / sizeof(short), 1000000000LL);
+            AAudioStream_write(c->play_stream, buf, n / sizeof(short), 20000000LL);
         } else if (n == 0) {
             usleep(10000);
         } else if (n < 0 && errno != EINTR) {
@@ -314,26 +317,8 @@ static void *audio_cap_thread(void *arg)
     if (fd < 0) { LOGE("audio cap open failed"); return NULL; }
     c->cap_fd = fd;
 
-    AAudioStreamBuilder *bld = NULL;
-    AAudio_createStreamBuilder(&bld);
-    AAudioStreamBuilder_setDirection(bld, AAUDIO_DIRECTION_INPUT);
-    AAudioStreamBuilder_setFormat(bld, AAUDIO_FORMAT_PCM_I16);
-    AAudioStreamBuilder_setSampleRate(bld, 48000);
-    AAudioStreamBuilder_setChannelCount(bld, 1);
-    AAudioStreamBuilder_setPerformanceMode(bld, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
-
-    AAudioStream *stream = NULL;
-    if (AAudioStreamBuilder_openStream(bld, &stream) != AAUDIO_OK) {
-        LOGE("audio cap open stream failed");
-        AAudioStreamBuilder_delete(bld);
-        close(fd);
-        c->cap_fd = -1;
-        return NULL;
-    }
-    AAudioStreamBuilder_delete(bld);
-    if (AAudioStream_requestStart(stream) != AAUDIO_OK) {
-        LOGE("audio cap start failed");
-        AAudioStream_close(stream);
+    if (!c->cap_stream) {
+        LOGE("audio cap stream not initialized");
         close(fd);
         c->cap_fd = -1;
         return NULL;
@@ -341,9 +326,16 @@ static void *audio_cap_thread(void *arg)
 
     LOGI("audio cap thread started");
 
-    short buf[480 * 1]; /* 10ms @ 48kHz mono */
+    if (AAudioStream_requestStart(c->cap_stream) != AAUDIO_OK) {
+        LOGE("audio cap start failed");
+        close(fd);
+        c->cap_fd = -1;
+        return NULL;
+    }
+
+    short buf[480 * 1];
     while (c->audio_running) {
-        int n = AAudioStream_read(stream, buf, sizeof(buf) / sizeof(short), 1000000000LL);
+        int n = AAudioStream_read(c->cap_stream, buf, sizeof(buf) / sizeof(short), 20000000LL);
         if (n > 0) {
             write(fd, buf, n * sizeof(short));
         } else {
@@ -351,8 +343,7 @@ static void *audio_cap_thread(void *arg)
         }
     }
 
-    AAudioStream_requestStop(stream);
-    AAudioStream_close(stream);
+    AAudioStream_requestStop(c->cap_stream);
     close(fd);
     c->cap_fd = -1;
     LOGI("audio cap thread stopped");
@@ -427,12 +418,16 @@ Java_com_vdrm_consumer_Native_nativeDestroy(JNIEnv *env, jclass clazz, jlong han
     if (c->audio_running) {
         c->audio_running = false;
         pthread_join(c->play_thr, NULL);
-        pthread_join(c->cap_thr, NULL);
+        if (c->cap_thr) pthread_join(c->cap_thr, NULL);
     }
     if (c->play_stream) {
         AAudioStream_requestStop(c->play_stream);
         AAudioStream_close(c->play_stream);
         c->play_stream = NULL;
+    }
+    if (c->cap_stream) {
+        AAudioStream_close(c->cap_stream);
+        c->cap_stream = NULL;
     }
     if (c->running) {
         c->running = false;
@@ -527,29 +522,47 @@ Java_com_vdrm_consumer_Native_nativeStart(JNIEnv *env, jclass clazz, jlong handl
     c->running = true;
     pthread_create(&c->thread, NULL, render_loop, c);
 
-    /* Initialize AAudio output stream (outside thread, so errors are visible) */
-    LOGI("audio init: play_stream=%p audio_running=%d", (void*)c->play_stream, c->audio_running);
+    /* Initialize AAudio output + input streams (outside threads, so errors are visible) */
+    LOGI("audio init: play_stream=%p cap_stream=%p audio_running=%d",
+         (void*)c->play_stream, (void*)c->cap_stream, c->audio_running);
     if (!c->play_stream) {
         AAudioStreamBuilder *bld = NULL;
-        aaudio_result_t ar = AAudio_createStreamBuilder(&bld);
-        if (ar != AAUDIO_OK) {
-            LOGE("AAudio_createStreamBuilder failed: %s", AAudio_convertResultToText(ar));
-        }
-        if (bld) {
+        if (AAudio_createStreamBuilder(&bld) == AAUDIO_OK && bld) {
             AAudioStreamBuilder_setDirection(bld, AAUDIO_DIRECTION_OUTPUT);
             AAudioStreamBuilder_setFormat(bld, AAUDIO_FORMAT_PCM_I16);
             AAudioStreamBuilder_setSampleRate(bld, 48000);
             AAudioStreamBuilder_setChannelCount(bld, 2);
             AAudioStreamBuilder_setPerformanceMode(bld, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
+            AAudioStreamBuilder_setSharingMode(bld, AAUDIO_SHARING_MODE_SHARED);
             AAudioStream *s = NULL;
             aaudio_result_t r = AAudioStreamBuilder_openStream(bld, &s);
             AAudioStreamBuilder_delete(bld);
             if (r == AAUDIO_OK && s) {
                 AAudioStream_requestStart(s);
                 c->play_stream = s;
-                LOGI("audio stream initialized (%d Hz x%d)", AAudioStream_getSampleRate(s), AAudioStream_getChannelCount(s));
+                LOGI("play stream initialized (%d Hz x%d)", AAudioStream_getSampleRate(s), AAudioStream_getChannelCount(s));
             } else {
-                LOGE("AAudio open failed: %s", AAudio_convertResultToText(r));
+                LOGE("AAudio play open failed: %s", AAudio_convertResultToText(r));
+            }
+        }
+    }
+    if (!c->cap_stream) {
+        AAudioStreamBuilder *bld = NULL;
+        if (AAudio_createStreamBuilder(&bld) == AAUDIO_OK && bld) {
+            AAudioStreamBuilder_setDirection(bld, AAUDIO_DIRECTION_INPUT);
+            AAudioStreamBuilder_setFormat(bld, AAUDIO_FORMAT_PCM_I16);
+            AAudioStreamBuilder_setSampleRate(bld, 48000);
+            AAudioStreamBuilder_setChannelCount(bld, 1);
+            AAudioStreamBuilder_setPerformanceMode(bld, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
+            AAudioStreamBuilder_setSharingMode(bld, AAUDIO_SHARING_MODE_SHARED);
+            AAudioStream *s = NULL;
+            aaudio_result_t r = AAudioStreamBuilder_openStream(bld, &s);
+            AAudioStreamBuilder_delete(bld);
+            if (r == AAUDIO_OK && s) {
+                c->cap_stream = s;
+                LOGI("cap stream initialized (%d Hz x%d)", AAudioStream_getSampleRate(s), AAudioStream_getChannelCount(s));
+            } else {
+                LOGE("AAudio cap open failed: %s", AAudio_convertResultToText(r));
             }
         }
     }
@@ -581,12 +594,16 @@ Java_com_vdrm_consumer_Native_nativeStop(JNIEnv *env, jclass clazz, jlong handle
     if (c->audio_running) {
         c->audio_running = false;
         pthread_join(c->play_thr, NULL);
-        pthread_join(c->cap_thr, NULL);
+        if (c->cap_thr) pthread_join(c->cap_thr, NULL);
     }
     if (c->play_stream) {
         AAudioStream_requestStop(c->play_stream);
         AAudioStream_close(c->play_stream);
         c->play_stream = NULL;
+    }
+    if (c->cap_stream) {
+        AAudioStream_close(c->cap_stream);
+        c->cap_stream = NULL;
     }
     if (c->win) {
         ANativeWindow_release(c->win);
@@ -598,10 +615,18 @@ Java_com_vdrm_consumer_Native_nativeStop(JNIEnv *env, jclass clazz, jlong handle
 /* ---- JNI (audio start / stop) ---- */
 
 JNIEXPORT void JNICALL
-Java_com_vdrm_consumer_Native_nativeStartAudio(JNIEnv *env, jclass clazz, jlong handle)
+ Java_com_vdrm_consumer_Native_nativeStartAudio(JNIEnv *env, jclass clazz, jlong handle)
 {
     struct consumer *c = STATE(handle);
-    if (!c || c->audio_running) return;
+    if (!c) return;
+
+    if (c->audio_running) {
+        if (!c->cap_thr) {
+            pthread_create(&c->cap_thr, NULL, audio_cap_thread, c);
+            LOGI("cap thread started from nativeStartAudio");
+        }
+        return;
+    }
 
     c->audio_running = true;
     pthread_create(&c->play_thr, NULL, audio_play_thread, c);
@@ -610,13 +635,13 @@ Java_com_vdrm_consumer_Native_nativeStartAudio(JNIEnv *env, jclass clazz, jlong 
 }
 
 JNIEXPORT void JNICALL
-Java_com_vdrm_consumer_Native_nativeStopAudio(JNIEnv *env, jclass clazz, jlong handle)
+ Java_com_vdrm_consumer_Native_nativeStopAudio(JNIEnv *env, jclass clazz, jlong handle)
 {
     struct consumer *c = STATE(handle);
     if (!c || !c->audio_running) return;
 
     c->audio_running = false;
     pthread_join(c->play_thr, NULL);
-    pthread_join(c->cap_thr, NULL);
+    if (c->cap_thr) pthread_join(c->cap_thr, NULL);
     LOGI("audio stopped");
 }
