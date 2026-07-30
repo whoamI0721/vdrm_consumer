@@ -37,10 +37,12 @@ jobs:
         run: echo "sdk.dir=$ANDROID_HOME" > local.properties
 
       - name: Clean (force rebuild native libs)
-        run: gradle clean --no-daemon
+        run: |
+          gradle clean --no-daemon
+          rm -rf app/.cxx 2>/dev/null || true
 
-      - name: Build
-        run: gradle assembleRelease --no-daemon
+      - name: Build (disable build cache to pick up native source changes)
+        run: gradle assembleRelease --no-daemon --no-build-cache
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
