@@ -36,6 +36,9 @@ jobs:
       - name: Create local.properties
         run: echo "sdk.dir=$ANDROID_HOME" > local.properties
 
+      - name: Clean (force rebuild native libs)
+        run: gradle clean --no-daemon
+
       - name: Build
         run: gradle assembleRelease --no-daemon
 
