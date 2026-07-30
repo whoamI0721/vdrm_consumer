@@ -1,9 +1,6 @@
-.gradle/
-build/
+*.apk
+*.so
+/build/
 app/build/
+app/.cxx/
 local.properties
-*.iml
-.idea/
-.cxx/
-*.swp
-*.swo
