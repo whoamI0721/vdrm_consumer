@@ -543,7 +543,11 @@ Java_com_vdrm_consumer_Native_nativeStart(JNIEnv *env, jclass clazz, jlong handl
     /* Start audio play thread — chroot writes PCM data to pipe, APK plays via AAudio */
     if (!c->audio_running) {
         c->audio_running = true;
-        pthread_create(&c->play_thr, NULL, audio_play_thread, c);
+        int ret = pthread_create(&c->play_thr, NULL, audio_play_thread, c);
+        if (ret != 0) {
+            LOGE("audio play thread create failed: %d", ret);
+            c->audio_running = false;
+        }
     }
 
     LOGI("started %dx%d %d bufs", c->screen_w, c->screen_h, c->buf_count);
