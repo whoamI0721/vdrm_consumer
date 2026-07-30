@@ -530,7 +530,10 @@ Java_com_vdrm_consumer_Native_nativeStart(JNIEnv *env, jclass clazz, jlong handl
     /* Initialize AAudio output stream (outside thread, so errors are visible) */
     if (!c->play_stream) {
         AAudioStreamBuilder *bld = NULL;
-        AAudio_createStreamBuilder(&bld);
+        aaudio_result_t ar = AAudio_createStreamBuilder(&bld);
+        if (ar != AAUDIO_OK) {
+            LOGE("AAudio_createStreamBuilder failed: %s", AAudio_convertResultToText(ar));
+        }
         if (bld) {
             AAudioStreamBuilder_setDirection(bld, AAUDIO_DIRECTION_OUTPUT);
             AAudioStreamBuilder_setFormat(bld, AAUDIO_FORMAT_PCM_I16);
