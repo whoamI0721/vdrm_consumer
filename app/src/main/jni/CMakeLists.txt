@@ -3,4 +3,4 @@ project(vdrm_consumer)
 
 add_library(vdrm_consumer SHARED native_consumer.c)
 target_include_directories(vdrm_consumer PRIVATE .)
-target_link_libraries(vdrm_consumer log android aaudio)
+target_link_libraries(vdrm_consumer log android aaudio EGL GLESv2)

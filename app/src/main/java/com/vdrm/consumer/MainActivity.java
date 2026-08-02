@@ -118,7 +118,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     @Override
     public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
         keyboardView.setScreenSize(width, height);
-        Native.nativeStart(nativeHandle, holder.getSurface());
+        /* FD import test mode (verifies container GPU -> screen pipeline).
+         * Switch back to nativeStart when the KPM path is wired up. */
+        Native.nativeTestFd(holder.getSurface());
+        // Native.nativeStart(nativeHandle, holder.getSurface());
         Native.nativeStartAudio(nativeHandle);
     }
 

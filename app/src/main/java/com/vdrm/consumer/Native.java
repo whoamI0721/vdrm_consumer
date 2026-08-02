@@ -10,6 +10,10 @@ public class Native {
     public static native void nativeStart(long handle, Surface surface);
     public static native void nativeStop(long handle);
 
+    /* FD import test: import container-rendered dma-buf and display it.
+     * Red screen = GPU content shown, green screen = import failed. */
+    public static native void nativeTestFd(Surface surface);
+
     /* Event senders (static, no handle needed) */
     public static native int nativeSendKey(int code, boolean down);
     public static native int nativeSendMotion(int dx, int dy);

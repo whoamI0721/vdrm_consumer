@@ -15,6 +15,13 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#include <GLES2/gl2.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/stat.h>
+
 #include "anw_hidden.h"
 
 #define TAG "VDRM"
@@ -650,4 +657,237 @@ JNIEXPORT void JNICALL
     pthread_join(c->play_thr, NULL);
     if (c->cap_thr) pthread_join(c->cap_thr, NULL);
     LOGI("audio stopped");
+}
+
+/* ====================================================================
+ * FD import test: verify that a dma-buf rendered by the container GPU
+ * can be imported and displayed by this app.
+ *
+ * Flow:
+ *   1. EGL window surface on the app's ANativeWindow
+ *   2. listen on unix socket (app-private dir, SELinux-safe)
+ *   3. container connects and sends the rendered dma-buf fd (SCM_RIGHTS)
+ *   4. import via EGL_EXT_image_dma_buf_import, sample as GL texture
+ *   5. fullscreen quad -> eglSwapBuffers
+ *
+ * Screen tells the story:
+ *   RED   = container GPU content displayed   (pipeline OK)
+ *   GREEN = import failed / no fd (fallback)  (pipeline broken)
+ * ==================================================================== */
+
+#define TEST_SOCK "/data/data/com.vdrm.consumer/vdrm_fd.sock"
+#define TEST_W 64
+#define TEST_H 64
+#define TEST_STRIDE (TEST_W * 4)
+
+struct fdtest_arg {
+    ANativeWindow *win;
+};
+
+static int fdtest_recv_fd(int sock, int *out_fd)
+{
+    char cbuf[CMSG_SPACE(sizeof(int))];
+    char b = 0;
+    struct iovec iov = { .iov_base = &b, .iov_len = 1 };
+    struct msghdr msg = {0};
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = cbuf;
+    msg.msg_controllen = sizeof(cbuf);
+    if (recvmsg(sock, &msg, 0) < 1) return -1;
+    struct cmsghdr *c = CMSG_FIRSTHDR(&msg);
+    if (!c || c->cmsg_level != SOL_SOCKET || c->cmsg_type != SCM_RIGHTS) return -1;
+    memcpy(out_fd, CMSG_DATA(c), sizeof(int));
+    return 0;
+}
+
+static GLuint fdtest_build_program(const char *vs, const char *fs)
+{
+    GLint ok;
+    char log[512];
+
+    GLuint v = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(v, 1, &vs, NULL);
+    glCompileShader(v);
+    glGetShaderiv(v, GL_COMPILE_STATUS, &ok);
+    if (!ok) { glGetShaderInfoLog(v, sizeof(log), NULL, log); LOGE("test: vs: %s", log); return 0; }
+
+    GLuint f = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(f, 1, &fs, NULL);
+    glCompileShader(f);
+    glGetShaderiv(f, GL_COMPILE_STATUS, &ok);
+    if (!ok) { glGetShaderInfoLog(f, sizeof(log), NULL, log); LOGE("test: fs: %s", log); return 0; }
+
+    GLuint p = glCreateProgram();
+    glAttachShader(p, v);
+    glAttachShader(p, f);
+    glLinkProgram(p);
+    glGetProgramiv(p, GL_LINK_STATUS, &ok);
+    if (!ok) { glGetProgramInfoLog(p, sizeof(log), NULL, log); LOGE("test: link: %s", log); return 0; }
+
+    glDeleteShader(v);
+    glDeleteShader(f);
+    return p;
+}
+
+static void *fdtest_thread(void *arg)
+{
+    struct fdtest_arg *t = arg;
+    ANativeWindow *win = t->win;
+    LOGI("test: fd import test started");
+
+    EGLDisplay dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (dpy == EGL_NO_DISPLAY) { LOGE("test: no display"); return NULL; }
+    if (!eglInitialize(dpy, NULL, NULL)) { LOGE("test: no init"); return NULL; }
+
+    EGLint cfg_attrs[] = {
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+        EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
+        EGL_NONE
+    };
+    EGLConfig cfg;
+    EGLint n = 0;
+    if (!eglChooseConfig(dpy, cfg_attrs, &cfg, 1, &n) || n < 1) { LOGE("test: no cfg"); return NULL; }
+
+    EGLSurface surf = eglCreateWindowSurface(dpy, cfg, (EGLNativeWindowType)win, NULL);
+    if (surf == EGL_NO_SURFACE) { LOGE("test: no win surface 0x%x", eglGetError()); return NULL; }
+    EGLint ctx_attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
+    EGLContext ctx = eglCreateContext(dpy, cfg, EGL_NO_CONTEXT, ctx_attrs);
+    if (ctx == EGL_NO_CONTEXT) { LOGE("test: no ctx"); return NULL; }
+    if (!eglMakeCurrent(dpy, surf, surf, ctx)) { LOGE("test: no current"); return NULL; }
+    LOGI("test: EGL ready");
+
+    const char *exts = eglQueryString(dpy, EGL_EXTENSIONS);
+    LOGI("test: EGL display ext: %s", exts ? exts : "(null)");
+    int has_dmabuf = exts && strstr(exts, "EGL_EXT_image_dma_buf_import") != NULL;
+
+    unlink(TEST_SOCK);
+    int lfd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (lfd < 0) { LOGE("test: socket: %s", strerror(errno)); return NULL; }
+    struct sockaddr_un addr = {0};
+    addr.sun_family = AF_UNIX;
+    strcpy(addr.sun_path, TEST_SOCK);
+    chmod(TEST_SOCK, 0777);
+    if (bind(lfd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        LOGE("test: bind %s: %s", TEST_SOCK, strerror(errno));
+        return NULL;
+    }
+    listen(lfd, 1);
+    LOGI("test: waiting for container fd on %s (dmabuf import supported=%d)",
+         TEST_SOCK, has_dmabuf);
+    int cfd = accept(lfd, NULL, NULL);
+    if (cfd < 0) { LOGE("test: accept: %s", strerror(errno)); return NULL; }
+
+    int dmabuf_fd = -1;
+    fdtest_recv_fd(cfd, &dmabuf_fd);
+    LOGI("test: received fd=%d", dmabuf_fd);
+
+    GLuint tex = 0;
+    GLuint prog = 0;
+    int imported = 0;
+
+    if (has_dmabuf && dmabuf_fd >= 0) {
+        PFNEGLCREATEIMAGEKHRPROC pCreateImage =
+            (PFNEGLCREATEIMAGEKHRPROC)eglGetProcAddress("eglCreateImageKHR");
+        void (*pTarget)(GLenum, void *) =
+            (void (*)(GLenum, void *))eglGetProcAddress("glEGLImageTargetTexture2DOES");
+
+        if (pCreateImage && pTarget) {
+            EGLint img_attrs[] = {
+                EGL_WIDTH, TEST_W,
+                EGL_HEIGHT, TEST_H,
+                EGL_LINUX_DRM_FOURCC_EXT, 0x34325241, /* AR24 (little-endian: B G R A) */
+                EGL_DMA_BUF_PLANE0_FD_EXT, dmabuf_fd,
+                EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
+                EGL_DMA_BUF_PLANE0_PITCH_EXT, TEST_STRIDE,
+                EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT, 0, /* LINEAR */
+                EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT, 0,
+                EGL_NONE
+            };
+            EGLImage img = pCreateImage(dpy, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, img_attrs);
+            if (img != EGL_NO_IMAGE) {
+                glGenTextures(1, &tex);
+                glBindTexture(GL_TEXTURE_2D, tex);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                pTarget(GL_TEXTURE_2D, img);
+                imported = 1;
+                LOGI("test: dma-buf imported as texture");
+            } else {
+                LOGE("test: EGLImage import failed 0x%x", eglGetError());
+            }
+        } else {
+            LOGE("test: missing import procs create=%p target=%p", pCreateImage, pTarget);
+        }
+    }
+
+    static const char vs[] =
+        "attribute vec2 a; void main(){ gl_Position=vec4(a,0.,1.); }";
+    if (imported) {
+        const char *fs = "precision mediump float;uniform sampler2D s;"
+                         "void main(){gl_FragColor=texture2D(s,gl_FragCoord.xy*vec2(0.015625,0.015625));}";
+        prog = fdtest_build_program(vs, fs);
+        GLint loc = glGetUniformLocation(prog, "s");
+        glUseProgram(prog);
+        glUniform1i(loc, 0);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, tex);
+    }
+    LOGI("test: import result: %s", imported ? "IMPORTED (red expected)" : "NO IMPORT (green fallback)");
+
+    int swap_ok = 0;
+    for (int i = 0; i < 600; i++) {
+        if (imported && prog) {
+            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+            const GLfloat quad[] = {
+                -1.0f, -1.0f,   1.0f, -1.0f,   -1.0f, 1.0f,
+                 1.0f, -1.0f,   1.0f,  1.0f,   -1.0f, 1.0f,
+            };
+            glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, quad);
+            glEnableVertexAttribArray(0);
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+        } else {
+            glClearColor(0.0f, 1.0f, 0.0f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+        }
+        eglSwapBuffers(dpy, surf);
+        if (!swap_ok) { swap_ok = 1; LOGI("test: first swap OK"); }
+        usleep(16000);
+    }
+
+    if (cfd >= 0) { send(cfd, "OK", 2, 0); close(cfd); }
+    close(lfd);
+    unlink(TEST_SOCK);
+    if (dmabuf_fd >= 0) close(dmabuf_fd);
+    eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    eglDestroyContext(dpy, ctx);
+    eglDestroySurface(dpy, surf);
+    eglTerminate(dpy);
+    ANativeWindow_release(win);
+    free(t);
+    LOGI("test: fd import test done");
+    return NULL;
+}
+
+JNIEXPORT void JNICALL
+Java_com_vdrm_consumer_Native_nativeTestFd(JNIEnv *env, jclass clazz, jobject surface)
+{
+    (void)clazz;
+    ANativeWindow *win = ANativeWindow_fromSurface(env, surface);
+    if (!win) { LOGE("test: ANativeWindow_fromSurface failed"); return; }
+    struct fdtest_arg *t = malloc(sizeof(*t));
+    if (!t) { ANativeWindow_release(win); return; }
+    t->win = win;
+    pthread_t thr;
+    if (pthread_create(&thr, NULL, fdtest_thread, t) != 0) {
+        LOGE("test: thread create failed");
+        ANativeWindow_release(win);
+        free(t);
+    }
+    pthread_detach(thr);
+    LOGI("test: thread started");
 }
