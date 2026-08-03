@@ -279,7 +279,7 @@ static void *render_loop(void *arg)
             continue;
         }
 
-        int fwait = vdrm_wait_fence();
+        int fwait = vdr2_wait_fence();
         if (fwait < 0) {
             LOGI("fence wait failed ret=%d", fwait);
         }
