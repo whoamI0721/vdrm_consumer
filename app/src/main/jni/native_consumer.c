@@ -144,6 +144,8 @@ static bool api_loaded;
 
 static int vdrm_submit(int dmabuf_fd, int slot, unsigned stride)
 {
+    int r = vdr2_open();
+    if (r < 0) return r;
     struct vdr2_reg_io reg = { dmabuf_fd, slot, vdr2_bell, stride };
     return vdr2_ioctl_checked(VDR2_IOC_REGISTER_BUF, &reg);
 }
