@@ -21,6 +21,8 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/stat.h>
+#include <sys/eventfd.h>
+#include <sys/ioctl.h>
 
 #include "anw_hidden.h"
 
@@ -29,48 +31,84 @@
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
-#define VDRM_MAGIC "/vdrm_magic"
+#define VDR2CTL_PATH "/dev/vdr2ctl"
 #define MAX_BUFS 6
+#define VDR2_SLOTS 3
 
-/* ---- Path helpers (event / audio) ---- */
+/* ---- Guard booth protocol (ioctl on /dev/vdr2ctl) ---- */
 
-static int vdrm_open_path(const char *fmt, ...)
+#define VDR2_IOC_NONE 0
+#define VDR2_IOC_WRITE 1
+#define VDR2_IOC_READ 2
+
+struct vdr2_frame_io { int fd; int pad; unsigned long long seq; };
+struct vdr2_ev_io    { int type, code, value, x, y; };
+struct vdr2_reg_io   { int fd, slot, efd; unsigned stride; };
+
+#define VDR2_IOC(cmd)        ((cmd) & 0xFF)
+#define VDR2_IOC_BEGIN          (0x56u << 8 | 0)
+#define VDR2_IOC_PRESENT        (VDR2_IOC_WRITE << 30 | 0x56u << 8 | 1 | sizeof(int) << 16)
+#define VDR2_IOC_FRAME          (VDR2_IOC_READ  << 30 | 0x56u << 8 | 2 | sizeof(struct vdr2_frame_io) << 16)
+#define VDR2_IOC_REGISTER_BUF   (VDR2_IOC_WRITE << 30 | 0x56u << 8 | 3 | sizeof(struct vdr2_reg_io) << 16)
+#define VDR2_IOC_CLEAR_BUFS     (0x56u << 8 | 4)
+#define VDR2_IOC_EV             (VDR2_IOC_WRITE << 30 | 0x56u << 8 | 5 | sizeof(struct vdr2_ev_io) << 16)
+#define VDR2_IOC_AUDIO_PLAY     (VDR2_IOC_READ  << 30 | 0x56u << 8 | 6 | sizeof(int) << 16)
+#define VDR2_IOC_AUDIO_CAP      (VDR2_IOC_READ  << 30 | 0x56u << 8 | 7 | sizeof(int) << 16)
+#define VDR2_IOC_AUDIO_PLAY_RECV (VDR2_IOC_READ << 30 | 0x56u << 8 | 8 | sizeof(int) << 16)
+#define VDR2_IOC_AUDIO_CAP_RECV  (VDR2_IOC_READ << 30 | 0x56u << 8 | 9 | sizeof(int) << 16)
+
+/* Event types (must match KPM) */
+#define VDR2_EV_KEY    1
+#define VDR2_EV_BUTTON 2
+#define VDR2_EV_MOTION 3
+#define VDR2_EV_SCROLL 4
+
+static int vdr2_fd = -1;
+static int vdr2_bell = -1;
+
+static int vdr2_open(void)
 {
-    char path[128];
-    va_list ap;
-    va_start(ap, fmt);
-    int len = vsnprintf(path, sizeof(path), fmt, ap);
-    va_end(ap);
-    if (len <= 0 || len >= (int)sizeof(path)) return -EINVAL;
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) return -errno;
-    close(fd);
+    if (vdr2_fd >= 0) return 0;
+    vdr2_fd = open(VDR2CTL_PATH, O_RDWR);
+    if (vdr2_fd < 0) return -errno;
+    if (vdr2_bell < 0) {
+        vdr2_bell = eventfd(0, EFD_NONBLOCK);
+        if (vdr2_bell < 0) { close(vdr2_fd); vdr2_fd = -1; return -errno; }
+    }
     return 0;
 }
 
-static int vdrm_send_key(int code, int down)
+static int vdr2_ioctl_checked(unsigned long req, void *arg)
 {
-    return vdrm_open_path(VDRM_MAGIC "/ev/key/%s/%d", down ? "down" : "up", code);
+    if (vdr2_open() < 0) return -ENODEV;
+    int r = ioctl(vdr2_fd, req, arg);
+    return r < 0 ? -errno : r;
 }
 
-static int vdrm_send_motion(int dx, int dy)
+/* ---- Event helpers ---- */
+
+static int vdr2_send_key(int code, int down)
 {
-    return vdrm_open_path(VDRM_MAGIC "/ev/motion/dx/%d/dy/%d", dx, dy);
+    struct vdr2_ev_io e = { VDR2_EV_KEY, code, down ? 1 : 0, 0, 0 };
+    return vdr2_ioctl_checked(VDR2_IOC_EV, &e);
 }
 
-static int vdrm_send_btn(int btn, int pressed)
+static int vdr2_send_motion(int dx, int dy)
 {
-    const char *name;
-    if (btn == 0x110) name = "left";
-    else if (btn == 0x111) name = "right";
-    else if (btn == 0x112) name = "middle";
-    else return -EINVAL;
-    return vdrm_open_path(VDRM_MAGIC "/ev/btn/%s/%d", name, pressed ? 1 : 0);
+    struct vdr2_ev_io e = { VDR2_EV_MOTION, 0, 0, dx, dy };
+    return vdr2_ioctl_checked(VDR2_IOC_EV, &e);
 }
 
-static int vdrm_send_scroll(int axis, int val)
+static int vdr2_send_btn(int btn, int pressed)
 {
-    return vdrm_open_path(VDRM_MAGIC "/ev/scroll/%d/%d", axis, val);
+    struct vdr2_ev_io e = { VDR2_EV_BUTTON, btn, pressed ? 1 : 0, 0, 0 };
+    return vdr2_ioctl_checked(VDR2_IOC_EV, &e);
+}
+
+static int vdr2_send_scroll(int axis, int val)
+{
+    struct vdr2_ev_io e = { VDR2_EV_SCROLL, axis, val, 0, 0 };
+    return vdr2_ioctl_checked(VDR2_IOC_EV, &e);
 }
 
 /* ---- ANativeWindow hidden API ---- */
@@ -104,51 +142,27 @@ struct consumer {
 static struct anw_api api;
 static bool api_loaded;
 
-static int vdrm_submit(int dmabuf_fd)
+static int vdrm_submit(int dmabuf_fd, int slot, unsigned stride)
 {
-    char path[64];
-    int len = snprintf(path, sizeof(path), VDRM_MAGIC "/submit/%d", dmabuf_fd);
-    if (len <= 0) return -EINVAL;
-
-    for (int i = 0; i < 50; i++) {
-        int fd = open(path, O_RDONLY);
-        if (fd >= 0) { close(fd); return 0; }
-        int err = errno;
-        if (err != EAGAIN) {
-            LOGE("submit open failed: %s", strerror(err));
-            return -err;
-        }
-        usleep(20000);
-    }
-    LOGE("submit EAGAIN timeout");
-    return -EAGAIN;
+    struct vdr2_reg_io reg = { dmabuf_fd, slot, vdr2_bell, stride };
+    return vdr2_ioctl_checked(VDR2_IOC_REGISTER_BUF, &reg);
 }
 
-static int vdrm_present(int idx)
+static int vdrm_present(void)
 {
-    char path[64];
-    int len = snprintf(path, sizeof(path), VDRM_MAGIC "/present/%d", idx);
-    if (len <= 0) return -EINVAL;
+    return vdr2_ioctl_checked(VDR2_IOC_PRESENT, &vdr2_bell);
+}
 
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) {
-        LOGE("present open failed: %s", strerror(errno));
+/* Wait until the kernel rings the bell (a frame flip happened).
+ * Blocks up to 5s; returns 0 on ring, -ETIMEDOUT otherwise. */
+static int vdr2_wait_fence(void)
+{
+    struct pollfd pfd = { .fd = vdr2_bell, .events = POLLIN };
+    int pr = poll(&pfd, 1, 5000);
+    if (pr <= 0) return pr == 0 ? -ETIMEDOUT : -errno;
+    unsigned long long cnt;
+    if (read(vdr2_bell, &cnt, sizeof(cnt)) != sizeof(cnt) && errno != EAGAIN)
         return -errno;
-    }
-    close(fd);
-    return 0;
-}
-
-static int vdrm_wait_fence(int idx)
-{
-    char path[64];
-    int len = snprintf(path, sizeof(path), VDRM_MAGIC "/fence/%d", idx);
-    if (len <= 0) return -EINVAL;
-    int fd = open(path, O_RDONLY | O_NONBLOCK);
-    if (fd < 0) return -errno;
-    struct pollfd pfd = { .fd = fd, .events = POLLIN };
-    poll(&pfd, 1, 5000);
-    close(fd);
     return 0;
 }
 
@@ -198,7 +212,7 @@ static int collect_buffers(struct consumer *c)
         if (is_dup) continue;
         if (submit_fd < 0) continue;
 
-        int ret = vdrm_submit(submit_fd);
+        int ret = vdrm_submit(submit_fd, found % VDR2_SLOTS, anb->stride);
         close(submit_fd);
         if (ret < 0) {
             LOGE("submit failed fd=%d ret=%d", fd, ret);
@@ -255,7 +269,7 @@ static void *render_loop(void *arg)
             continue;
         }
 
-        int ret = vdrm_present(idx);
+        int ret = vdrm_present();
         if (ret < 0) {
             if (ret == -EINTR) {
                 LOGI("present interrupted by signal");
@@ -265,9 +279,9 @@ static void *render_loop(void *arg)
             continue;
         }
 
-        int fwait = vdrm_wait_fence(idx);
+        int fwait = vdrm_wait_fence();
         if (fwait < 0) {
-            LOGI("fence wait failed idx=%d ret=%d", idx, fwait);
+            LOGI("fence wait failed ret=%d", fwait);
         }
         api.queueBuffer(c->win, anb, -1);
     }
@@ -282,8 +296,9 @@ static void *audio_play_thread(void *arg)
 {
     struct consumer *c = arg;
 
-    int fd = open(VDRM_MAGIC "/audio/play", O_RDONLY);
-    if (fd < 0) { LOGE("audio play open failed"); return NULL; }
+    int fd = -1;
+    int r = vdr2_ioctl_checked(VDR2_IOC_AUDIO_PLAY, &fd);
+    if (r < 0 || fd < 0) { LOGE("audio play ioctl failed ret=%d", r); return NULL; }
     c->play_fd = fd;
 
     if (!c->play_stream) {
@@ -326,8 +341,9 @@ static void *audio_cap_thread(void *arg)
 {
     struct consumer *c = arg;
 
-    int fd = open(VDRM_MAGIC "/audio/cap", O_WRONLY);
-    if (fd < 0) { LOGE("audio cap open failed"); return NULL; }
+    int fd = -1;
+    int r = vdr2_ioctl_checked(VDR2_IOC_AUDIO_CAP, &fd);
+    if (r < 0 || fd < 0) { LOGE("audio cap ioctl failed ret=%d", r); return NULL; }
     c->cap_fd = fd;
 
     if (!c->cap_stream) {
@@ -369,28 +385,28 @@ JNIEXPORT jint JNICALL
 Java_com_vdrm_consumer_Native_nativeSendKey(JNIEnv *env, jclass clazz, jint code, jboolean down)
 {
     (void)env; (void)clazz;
-    return vdrm_send_key((int)code, down ? 1 : 0);
+    return vdr2_send_key((int)code, down ? 1 : 0);
 }
 
 JNIEXPORT jint JNICALL
 Java_com_vdrm_consumer_Native_nativeSendMotion(JNIEnv *env, jclass clazz, jint dx, jint dy)
 {
     (void)env; (void)clazz;
-    return vdrm_send_motion((int)dx, (int)dy);
+    return vdr2_send_motion((int)dx, (int)dy);
 }
 
 JNIEXPORT jint JNICALL
 Java_com_vdrm_consumer_Native_nativeSendBtn(JNIEnv *env, jclass clazz, jint btn, jboolean pressed)
 {
     (void)env; (void)clazz;
-    return vdrm_send_btn((int)btn, pressed ? 1 : 0);
+    return vdr2_send_btn((int)btn, pressed ? 1 : 0);
 }
 
 JNIEXPORT jint JNICALL
 Java_com_vdrm_consumer_Native_nativeSendScroll(JNIEnv *env, jclass clazz, jint axis, jint val)
 {
     (void)env; (void)clazz;
-    return vdrm_send_scroll((int)axis, (int)val);
+    return vdr2_send_scroll((int)axis, (int)val);
 }
 
 /* ---- JNI (instance: lifecycle) ---- */
@@ -660,107 +676,65 @@ JNIEXPORT void JNICALL
 }
 
 /* ====================================================================
- * FD import test: verify that a dma-buf rendered by the container GPU
- * can be imported and displayed by this app.
+ * FD import test -> gralloc-render test.
  *
- * Flow:
- *   1. EGL window surface on the app's ANativeWindow
- *   2. listen on unix socket (app-private dir, SELinux-safe)
- *   3. container connects and sends the rendered dma-buf fd (SCM_RIGHTS)
- *   4. import via EGL_EXT_image_dma_buf_import, sample as GL texture
- *   5. fullscreen quad -> eglSwapBuffers
+ * System EGL on this device has no EGL_EXT_image_dma_buf_import, so
+ * importing an arbitrary dma-buf is impossible. Instead we verify the
+ * real VDRM pipeline:
+ *
+ *   1. dequeue an ANativeWindow buffer (gralloc, displayable by design)
+ *   2. send its dma-buf fd to the container (unix socket, SCM_RIGHTS)
+ *   3. container GPU renders into that buffer
+ *   4. container acks, we queueBuffer -> SurfaceFlinger shows it
  *
  * Screen tells the story:
  *   RED   = container GPU content displayed   (pipeline OK)
- *   GREEN = import failed / no fd (fallback)  (pipeline broken)
+ *   BLACK = container render failed           (pipeline broken)
  * ==================================================================== */
 
 #define TEST_SOCK "/data/data/com.vdrm.consumer/vdrm_fd.sock"
-#define TEST_W 64
-#define TEST_H 64
-#define TEST_STRIDE (TEST_W * 4)
 
 struct fdtest_arg {
     ANativeWindow *win;
 };
 
-static int fdtest_recv_fd(int sock, int *out_fd)
+static int fdtest_send_msg_fd(int sock, const char *msg, size_t len, int fd)
 {
     char cbuf[CMSG_SPACE(sizeof(int))];
-    char b = 0;
-    struct iovec iov = { .iov_base = &b, .iov_len = 1 };
-    struct msghdr msg = {0};
-    msg.msg_iov = &iov;
-    msg.msg_iovlen = 1;
-    msg.msg_control = cbuf;
-    msg.msg_controllen = sizeof(cbuf);
-    if (recvmsg(sock, &msg, 0) < 1) return -1;
-    struct cmsghdr *c = CMSG_FIRSTHDR(&msg);
-    if (!c || c->cmsg_level != SOL_SOCKET || c->cmsg_type != SCM_RIGHTS) return -1;
-    memcpy(out_fd, CMSG_DATA(c), sizeof(int));
-    return 0;
-}
-
-static GLuint fdtest_build_program(const char *vs, const char *fs)
-{
-    GLint ok;
-    char log[512];
-
-    GLuint v = glCreateShader(GL_VERTEX_SHADER);
-    glShaderSource(v, 1, &vs, NULL);
-    glCompileShader(v);
-    glGetShaderiv(v, GL_COMPILE_STATUS, &ok);
-    if (!ok) { glGetShaderInfoLog(v, sizeof(log), NULL, log); LOGE("test: vs: %s", log); return 0; }
-
-    GLuint f = glCreateShader(GL_FRAGMENT_SHADER);
-    glShaderSource(f, 1, &fs, NULL);
-    glCompileShader(f);
-    glGetShaderiv(f, GL_COMPILE_STATUS, &ok);
-    if (!ok) { glGetShaderInfoLog(f, sizeof(log), NULL, log); LOGE("test: fs: %s", log); return 0; }
-
-    GLuint p = glCreateProgram();
-    glAttachShader(p, v);
-    glAttachShader(p, f);
-    glLinkProgram(p);
-    glGetProgramiv(p, GL_LINK_STATUS, &ok);
-    if (!ok) { glGetProgramInfoLog(p, sizeof(log), NULL, log); LOGE("test: link: %s", log); return 0; }
-
-    glDeleteShader(v);
-    glDeleteShader(f);
-    return p;
+    struct iovec iov = { .iov_base = (void *)msg, .iov_len = len };
+    struct msghdr mh = {0};
+    mh.msg_iov = &iov;
+    mh.msg_iovlen = 1;
+    if (fd >= 0) {
+        mh.msg_control = cbuf;
+        mh.msg_controllen = sizeof(cbuf);
+        struct cmsghdr *c = CMSG_FIRSTHDR(&mh);
+        c->cmsg_level = SOL_SOCKET;
+        c->cmsg_type = SCM_RIGHTS;
+        c->cmsg_len = CMSG_LEN(sizeof(int));
+        memcpy(CMSG_DATA(c), &fd, sizeof(int));
+    }
+    return sendmsg(sock, &mh, 0);
 }
 
 static void *fdtest_thread(void *arg)
 {
     struct fdtest_arg *t = arg;
     ANativeWindow *win = t->win;
-    LOGI("test: fd import test started");
+    LOGI("test: gralloc-render test started");
 
-    EGLDisplay dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-    if (dpy == EGL_NO_DISPLAY) { LOGE("test: no display"); return NULL; }
-    if (!eglInitialize(dpy, NULL, NULL)) { LOGE("test: no init"); return NULL; }
+    if (anw_api_load(&api) < 0) {
+        LOGE("test: failed to load ANativeWindow hidden API");
+        return NULL;
+    }
 
-    EGLint cfg_attrs[] = {
-        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
-        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
-        EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
-        EGL_NONE
-    };
-    EGLConfig cfg;
-    EGLint n = 0;
-    if (!eglChooseConfig(dpy, cfg_attrs, &cfg, 1, &n) || n < 1) { LOGE("test: no cfg"); return NULL; }
-
-    EGLSurface surf = eglCreateWindowSurface(dpy, cfg, (EGLNativeWindowType)win, NULL);
-    if (surf == EGL_NO_SURFACE) { LOGE("test: no win surface 0x%x", eglGetError()); return NULL; }
-    EGLint ctx_attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
-    EGLContext ctx = eglCreateContext(dpy, cfg, EGL_NO_CONTEXT, ctx_attrs);
-    if (ctx == EGL_NO_CONTEXT) { LOGE("test: no ctx"); return NULL; }
-    if (!eglMakeCurrent(dpy, surf, surf, ctx)) { LOGE("test: no current"); return NULL; }
-    LOGI("test: EGL ready");
-
-    const char *exts = eglQueryString(dpy, EGL_EXTENSIONS);
-    LOGI("test: EGL display ext: %s", exts ? exts : "(null)");
-    int has_dmabuf = exts && strstr(exts, "EGL_EXT_image_dma_buf_import") != NULL;
+    int w = ANativeWindow_getWidth(win);
+    int h = ANativeWindow_getHeight(win);
+    if (w <= 0) w = 1280;
+    if (h <= 0) h = 720;
+    ANativeWindow_setBuffersGeometry(win, w, h, AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM);
+    api.setBufferCount(win, 3);
+    LOGI("test: window %dx%d", w, h);
 
     unlink(TEST_SOCK);
     int lfd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -774,102 +748,55 @@ static void *fdtest_thread(void *arg)
         return NULL;
     }
     listen(lfd, 1);
-    LOGI("test: waiting for container fd on %s (dmabuf import supported=%d)",
-         TEST_SOCK, has_dmabuf);
+    LOGI("test: waiting for container on %s", TEST_SOCK);
     int cfd = accept(lfd, NULL, NULL);
     if (cfd < 0) { LOGE("test: accept: %s", strerror(errno)); return NULL; }
+    LOGI("test: container connected");
 
-    int dmabuf_fd = -1;
-    fdtest_recv_fd(cfd, &dmabuf_fd);
-    LOGI("test: received fd=%d", dmabuf_fd);
-
-    GLuint tex = 0;
-    GLuint prog = 0;
-    int imported = 0;
-
-    if (has_dmabuf && dmabuf_fd >= 0) {
-        PFNEGLCREATEIMAGEKHRPROC pCreateImage =
-            (PFNEGLCREATEIMAGEKHRPROC)eglGetProcAddress("eglCreateImageKHR");
-        void (*pTarget)(GLenum, void *) =
-            (void (*)(GLenum, void *))eglGetProcAddress("glEGLImageTargetTexture2DOES");
-
-        if (pCreateImage && pTarget) {
-            EGLint img_attrs[] = {
-                EGL_WIDTH, TEST_W,
-                EGL_HEIGHT, TEST_H,
-                EGL_LINUX_DRM_FOURCC_EXT, 0x34325241, /* AR24 (little-endian: B G R A) */
-                EGL_DMA_BUF_PLANE0_FD_EXT, dmabuf_fd,
-                EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
-                EGL_DMA_BUF_PLANE0_PITCH_EXT, TEST_STRIDE,
-                EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT, 0, /* LINEAR */
-                EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT, 0,
-                EGL_NONE
-            };
-            EGLImage img = pCreateImage(dpy, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, img_attrs);
-            if (img != EGL_NO_IMAGE) {
-                glGenTextures(1, &tex);
-                glBindTexture(GL_TEXTURE_2D, tex);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-                pTarget(GL_TEXTURE_2D, img);
-                imported = 1;
-                LOGI("test: dma-buf imported as texture");
-            } else {
-                LOGE("test: EGLImage import failed 0x%x", eglGetError());
-            }
-        } else {
-            LOGE("test: missing import procs create=%p target=%p", pCreateImage, pTarget);
-        }
-    }
-
-    static const char vs[] =
-        "attribute vec2 a; void main(){ gl_Position=vec4(a,0.,1.); }";
-    if (imported) {
-        const char *fs = "precision mediump float;uniform sampler2D s;"
-                         "void main(){gl_FragColor=texture2D(s,gl_FragCoord.xy*vec2(0.015625,0.015625));}";
-        prog = fdtest_build_program(vs, fs);
-        GLint loc = glGetUniformLocation(prog, "s");
-        glUseProgram(prog);
-        glUniform1i(loc, 0);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, tex);
-    }
-    LOGI("test: import result: %s", imported ? "IMPORTED (red expected)" : "NO IMPORT (green fallback)");
-
-    int swap_ok = 0;
+    int frames = 0;
     for (int i = 0; i < 600; i++) {
-        if (imported && prog) {
-            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-            glClear(GL_COLOR_BUFFER_BIT);
-            const GLfloat quad[] = {
-                -1.0f, -1.0f,   1.0f, -1.0f,   -1.0f, 1.0f,
-                 1.0f, -1.0f,   1.0f,  1.0f,   -1.0f, 1.0f,
-            };
-            glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, quad);
-            glEnableVertexAttribArray(0);
-            glDrawArrays(GL_TRIANGLES, 0, 6);
-        } else {
-            glClearColor(0.0f, 1.0f, 0.0f, 1.0f);
-            glClear(GL_COLOR_BUFFER_BIT);
+        ANativeWindowBuffer *anb = NULL;
+        int fence = -1;
+        int dq_ret = api.dequeueBuffer(win, &anb, &fence);
+        if (dq_ret != 0 || !anb) {
+            LOGW("test: dequeue failed ret=%d err=%s", dq_ret, strerror(-dq_ret));
+            usleep(16000);
+            continue;
         }
-        eglSwapBuffers(dpy, surf);
-        if (!swap_ok) { swap_ok = 1; LOGI("test: first swap OK"); }
-        usleep(16000);
+        if (fence >= 0) close(fence);
+        if (!anb->handle || anb->handle->numFds < 1) {
+            LOGW("test: buffer has no fd");
+            api.cancelBuffer(win, anb, -1);
+            continue;
+        }
+
+        int fd = dup(anb->handle->data[0]);
+        struct {
+            char magic[4];
+            int w, h, stride;
+        } hdr = { {'G','F','D','1'}, anb->width, anb->height, anb->stride };
+        int sr = fdtest_send_msg_fd(cfd, (const char *)&hdr, sizeof(hdr), fd);
+        close(fd);
+        if (sr < 0) { LOGE("test: send fd failed: %s", strerror(errno)); break; }
+
+        char ack[8] = {0};
+        ssize_t ar = read(cfd, ack, sizeof(ack));
+        if (ar < 0) { LOGE("test: ack failed: %s", strerror(errno)); break; }
+        if (ar == 0) { LOGE("test: container closed"); break; }
+
+        if (frames < 5 || frames % 50 == 0)
+            LOGI("test: frame %d: buf %dx%d stride=%d ack=%.4s", frames,
+                 anb->width, anb->height, anb->stride, ack);
+        api.queueBuffer(win, anb, -1);
+        frames++;
     }
 
-    if (cfd >= 0) { send(cfd, "OK", 2, 0); close(cfd); }
+    if (cfd >= 0) close(cfd);
     close(lfd);
     unlink(TEST_SOCK);
-    if (dmabuf_fd >= 0) close(dmabuf_fd);
-    eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-    eglDestroyContext(dpy, ctx);
-    eglDestroySurface(dpy, surf);
-    eglTerminate(dpy);
     ANativeWindow_release(win);
     free(t);
-    LOGI("test: fd import test done");
+    LOGI("test: gralloc-render test done (%d frames)", frames);
     return NULL;
 }
 
