@@ -76,6 +76,7 @@ static int vdr2_open(void)
         vdr2_fd = open(VDR2CTL_PATH, O_RDWR);
     }
     if (vdr2_fd < 0) return -errno;
+init_bell:
     if (vdr2_bell < 0) {
         vdr2_bell = eventfd(0, EFD_NONBLOCK);
         if (vdr2_bell < 0) { close(vdr2_fd); vdr2_fd = -1; return -errno; }
