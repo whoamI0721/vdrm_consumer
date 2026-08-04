@@ -110,6 +110,11 @@ static int vdr2_open(void)
 
 static int vdr2_ioctl_checked(unsigned long req, void *arg)
 {
+    return vdr2_ioctl_checked_fds(req, arg, NULL, 0);
+}
+
+static int vdr2_ioctl_checked_fds(unsigned long req, void *arg, int *fds, int nfds)
+{
     if (vdr2_open() < 0) return -ENODEV;
     char arg_buf[128] = {0};
     if (arg) memcpy(arg_buf, arg, 128);
@@ -118,9 +123,19 @@ static int vdr2_ioctl_checked(unsigned long req, void *arg)
     iov[0].iov_len = sizeof(req);
     iov[1].iov_base = arg_buf;
     iov[1].iov_len = sizeof(arg_buf);
+    char cmsg_buf[CMSG_SPACE(sizeof(int) * 3)] = {0};
     struct msghdr msg = {0};
     msg.msg_iov = iov;
     msg.msg_iovlen = 2;
+    if (nfds > 0 && fds) {
+        msg.msg_control = cmsg_buf;
+        msg.msg_controllen = CMSG_SPACE(sizeof(int) * nfds);
+        struct cmsghdr *c = CMSG_FIRSTHDR(&msg);
+        c->cmsg_level = SOL_SOCKET;
+        c->cmsg_type = SCM_RIGHTS;
+        c->cmsg_len = CMSG_LEN(sizeof(int) * nfds);
+        memcpy(CMSG_DATA(c), fds, sizeof(int) * nfds);
+    }
     if (sendmsg(vdr2_sock, &msg, 0) < 0) return -errno;
     long ret;
     if (read(vdr2_sock, &ret, sizeof(ret)) != sizeof(ret)) return -EIO;
@@ -191,12 +206,14 @@ static int vdrm_submit(int dmabuf_fd, int slot, unsigned stride)
     int r = vdr2_open();
     if (r < 0) return r;
     struct vdr2_reg_io reg = { dmabuf_fd, slot, vdr2_bell, stride };
-    return vdr2_ioctl_checked(VDR2_IOC_REGISTER_BUF, &reg);
+    int fds[2] = { dmabuf_fd, vdr2_bell };
+    return vdr2_ioctl_checked_fds(VDR2_IOC_REGISTER_BUF, &reg, fds, 2);
 }
 
 static int vdrm_present(void)
 {
-    return vdr2_ioctl_checked(VDR2_IOC_PRESENT, &vdr2_bell);
+    int fds[1] = { vdr2_bell };
+    return vdr2_ioctl_checked_fds(VDR2_IOC_PRESENT, &vdr2_bell, fds, 1);
 }
 
 /* Wait until the kernel rings the bell (a frame flip happened).

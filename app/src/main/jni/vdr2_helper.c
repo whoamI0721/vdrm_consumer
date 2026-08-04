@@ -17,6 +17,7 @@ __attribute__((visibility("default"))) int main(int argc, char **argv)
     for (;;) {
         unsigned long req;
         char arg_buf[128];
+        char cmsg_buf[CMSG_SPACE(sizeof(int) * 3)];
         struct iovec iov[2];
         iov[0].iov_base = &req;
         iov[0].iov_len = sizeof(req);
@@ -25,8 +26,20 @@ __attribute__((visibility("default"))) int main(int argc, char **argv)
         struct msghdr msg = {0};
         msg.msg_iov = iov;
         msg.msg_iovlen = 2;
+        msg.msg_control = cmsg_buf;
+        msg.msg_controllen = sizeof(cmsg_buf);
         ssize_t n = recvmsg(sock, &msg, 0);
         if (n <= 0) break;
+        struct cmsghdr *c = CMSG_FIRSTHDR(&msg);
+        if (c && c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS) {
+            int nfds = (c->cmsg_len - CMSG_LEN(0)) / sizeof(int);
+            int *fds = (int *)CMSG_DATA(c);
+            if (nfds >= 1) {
+                memcpy(&arg_buf[0], &fds[0], sizeof(int));
+                if (nfds >= 2)
+                    memcpy(&arg_buf[8], &fds[1], sizeof(int));
+            }
+        }
         long ret = ioctl(fd, req, arg_buf);
         if (ret < 0) ret = -errno;
         if (write(sock, &ret, sizeof(ret)) != sizeof(ret)) break;
