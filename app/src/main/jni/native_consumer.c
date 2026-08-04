@@ -23,6 +23,7 @@
 #include <sys/stat.h>
 #include <sys/eventfd.h>
 #include <sys/ioctl.h>
+#include <sys/wait.h>
 
 #include "anw_hidden.h"
 
@@ -71,11 +72,53 @@ static int vdr2_open(void)
     if (vdr2_fd >= 0) return 0;
     vdr2_fd = open(VDR2CTL_PATH, O_RDWR);
     if (vdr2_fd >= 0) goto init_bell;
-    if (errno == EACCES || errno == EPERM) {
-        system("su -c 'chmod 0666 /dev/vdr2ctl' 2>/dev/null");
-        vdr2_fd = open(VDR2CTL_PATH, O_RDWR);
+    if (errno != EACCES && errno != EPERM) return -errno;
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) return -errno;
+    pid_t pid = fork();
+    if (pid < 0) { close(sv[0]); close(sv[1]); return -errno; }
+    if (pid == 0) {
+        close(sv[0]);
+        Dl_info info;
+        if (dladdr((void *)vdr2_open, &info) && info.dli_fname) {
+            char helper_path[256];
+            strncpy(helper_path, info.dli_fname, sizeof(helper_path) - 1);
+            helper_path[sizeof(helper_path) - 1] = 0;
+            char *p = strstr(helper_path, "libvdrm_consumer");
+            if (p) {
+                memcpy(p, "libvdr2_helper", 14);
+                char fd_str[16];
+                snprintf(fd_str, sizeof(fd_str), "%d", sv[1]);
+                char cmd[512];
+                snprintf(cmd, sizeof(cmd),
+                         "/system/bin/linker64 %s %s",
+                         helper_path, fd_str);
+                execlp("su", "su", "-c", cmd, NULL);
+            }
+        }
+        _exit(1);
     }
-    if (vdr2_fd < 0) return -errno;
+    close(sv[1]);
+    struct iovec iov;
+    char buf;
+    iov.iov_base = &buf;
+    iov.iov_len = 1;
+    char cmsg[CMSG_SPACE(sizeof(int))];
+    struct msghdr msg = {0};
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = cmsg;
+    msg.msg_controllen = sizeof(cmsg);
+    ssize_t r = recvmsg(sv[0], &msg, 0);
+    close(sv[0]);
+    int status;
+    waitpid(pid, &status, 0);
+    if (r <= 0) return -EIO;
+    struct cmsghdr *c = CMSG_FIRSTHDR(&msg);
+    if (!c || c->cmsg_level != SOL_SOCKET || c->cmsg_type != SCM_RIGHTS)
+        return -EIO;
+    memcpy(&vdr2_fd, CMSG_DATA(c), sizeof(int));
+    if (vdr2_fd < 0) return -EIO;
 init_bell:
     if (vdr2_bell < 0) {
         vdr2_bell = eventfd(0, EFD_NONBLOCK);
