@@ -8,7 +8,7 @@
 #include <sys/uio.h>
 #include <sys/ioctl.h>
 
-int main(int argc, char **argv)
+__attribute__((visibility("default"))) int main(int argc, char **argv)
 {
     if (argc < 2) return 1;
     int sock = atoi(argv[1]);
