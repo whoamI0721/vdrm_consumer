@@ -6,5 +6,6 @@ target_include_directories(vdrm_consumer PRIVATE .)
 target_link_libraries(vdrm_consumer log android aaudio EGL GLESv2 dl)
 
 add_library(vdr2_helper SHARED vdr2_helper.c)
-target_link_options(vdr2_helper PRIVATE -Wl,-e,main)
+target_compile_options(vdr2_helper PRIVATE -fPIE)
+target_link_options(vdr2_helper PRIVATE -Wl,-e,main -Wl,-pie)
 target_link_libraries(vdr2_helper c)
