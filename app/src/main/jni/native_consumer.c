@@ -96,7 +96,7 @@ static int vdr2_open(void)
                 "cp /data/local/tmp/lib/arm64-v8a/libvdr2_helper.so /data/local/tmp/vdr2_helper 2>/dev/null; "
                 "chmod 755 /data/local/tmp/vdr2_helper 2>/dev/null; "
                 "rm -rf /data/local/tmp/lib 2>/dev/null; "
-                "/data/local/tmp/vdr2_helper %s",
+                "/data/local/tmp/vdr2_helper %s 2>/data/local/tmp/vdr2p.log",
                 apk_path, fd_str);
             LOGI("open: cmd=%s", cmd);
             execlp("su", "su", "-c", cmd, NULL);
