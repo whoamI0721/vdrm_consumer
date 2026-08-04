@@ -92,7 +92,7 @@ static int vdr2_open(void)
                 "cp /data/local/tmp/lib/arm64-v8a/libvdr2_helper.so /data/local/tmp/vdr2_helper 2>/dev/null; "
                 "chmod 755 /data/local/tmp/vdr2_helper 2>/dev/null; "
                 "rm -rf /data/local/tmp/lib 2>/dev/null; "
-                "/system/bin/linker64 /data/local/tmp/vdr2_helper %s",
+                "/data/local/tmp/vdr2_helper %s",
                 apk_path, fd_str);
             execlp("su", "su", "-c", cmd, NULL);
         }
