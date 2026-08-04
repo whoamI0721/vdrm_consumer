@@ -158,6 +158,7 @@ static int vdr2_ioctl_checked_fds(unsigned long req, void *arg, int *fds, int nf
     if (c_rcv && c_rcv->cmsg_level == SOL_SOCKET && c_rcv->cmsg_type == SCM_RIGHTS) {
         int rcv_fd;
         memcpy(&rcv_fd, CMSG_DATA(c_rcv), sizeof(int));
+        LOGI("cmsg rcv_fd=%d", rcv_fd);
         if (rcv_fd >= 0 && arg) {
             int nr = req & 0xFF;
             if (nr == 6 || nr == 7)
