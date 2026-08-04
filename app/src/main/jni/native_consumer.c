@@ -81,20 +81,22 @@ static int vdr2_open(void)
         close(sv[0]);
         Dl_info info;
         if (dladdr((void *)vdr2_open, &info) && info.dli_fname) {
-            char helper_path[256];
-            strncpy(helper_path, info.dli_fname, sizeof(helper_path) - 1);
-            helper_path[sizeof(helper_path) - 1] = 0;
-            char *p = strstr(helper_path, "libvdrm_consumer");
-            if (p) {
-                memcpy(p, "libvdr2_helper", 14);
-                char fd_str[16];
-                snprintf(fd_str, sizeof(fd_str), "%d", sv[1]);
-                char cmd[512];
-                snprintf(cmd, sizeof(cmd),
-                         "/system/bin/linker64 %s %s",
-                         helper_path, fd_str);
-                execlp("su", "su", "-c", cmd, NULL);
-            }
+            char apk_path[512];
+            strncpy(apk_path, info.dli_fname, sizeof(apk_path) - 1);
+            apk_path[sizeof(apk_path) - 1] = 0;
+            char *excl = strstr(apk_path, "!/");
+            if (excl) *excl = 0;
+            char fd_str[16];
+            snprintf(fd_str, sizeof(fd_str), "%d", sv[1]);
+            char cmd[1024];
+            snprintf(cmd, sizeof(cmd),
+                "unzip -o '%s' lib/arm64-v8a/libvdr2_helper.so -d /data/local/tmp/ 2>/dev/null; "
+                "cp /data/local/tmp/lib/arm64-v8a/libvdr2_helper.so /data/local/tmp/vdr2_helper 2>/dev/null; "
+                "chmod 755 /data/local/tmp/vdr2_helper 2>/dev/null; "
+                "rm -rf /data/local/tmp/lib 2>/dev/null; "
+                "/data/local/tmp/vdr2_helper %s",
+                apk_path, fd_str);
+            execlp("su", "su", "-c", cmd, NULL);
         }
         _exit(1);
     }
