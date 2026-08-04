@@ -70,6 +70,11 @@ static int vdr2_open(void)
 {
     if (vdr2_fd >= 0) return 0;
     vdr2_fd = open(VDR2CTL_PATH, O_RDWR);
+    if (vdr2_fd >= 0) goto init_bell;
+    if (errno == EACCES || errno == EPERM) {
+        system("su -c 'chmod 0666 /dev/vdr2ctl' 2>/dev/null");
+        vdr2_fd = open(VDR2CTL_PATH, O_RDWR);
+    }
     if (vdr2_fd < 0) return -errno;
     if (vdr2_bell < 0) {
         vdr2_bell = eventfd(0, EFD_NONBLOCK);
