@@ -150,6 +150,7 @@ static int vdr2_ioctl_checked_fds(unsigned long req, void *arg, int *fds, int nf
     msg_rcv.msg_control = cmsg_rcv;
     msg_rcv.msg_controllen = sizeof(cmsg_rcv);
     if (recvmsg(vdr2_sock, &msg_rcv, 0) < 0) return -EIO;
+    LOGI("ioctl_rcv: ret=%ld controllen=%d", (long)ret, (int)msg_rcv.msg_controllen);
     struct cmsghdr *c_rcv = CMSG_FIRSTHDR(&msg_rcv);
     if (c_rcv && c_rcv->cmsg_level == SOL_SOCKET && c_rcv->cmsg_type == SCM_RIGHTS) {
         int rcv_fd;
