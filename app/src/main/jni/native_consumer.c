@@ -71,19 +71,23 @@ static int vdr2_bell = -1;
 static int vdr2_open(void)
 {
     if (vdr2_sock >= 0) return 0;
+    LOGI("open: creating socketpair");
     int sv[2];
-    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) return -errno;
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) { LOGE("open: socketpair fail err=%d", errno); return -errno; }
+    LOGI("open: sv=[%d,%d]", sv[0], sv[1]);
     pid_t pid = fork();
-    if (pid < 0) { close(sv[0]); close(sv[1]); return -errno; }
+    if (pid < 0) { LOGE("open: fork fail err=%d", errno); close(sv[0]); close(sv[1]); return -errno; }
     if (pid == 0) {
+        LOGI("open: child started");
         close(sv[0]);
         Dl_info info;
         if (dladdr((void *)vdr2_open, &info) && info.dli_fname) {
+            LOGI("open: dli_fname=%s", info.dli_fname);
             char apk_path[512];
             strncpy(apk_path, info.dli_fname, sizeof(apk_path) - 1);
             apk_path[sizeof(apk_path) - 1] = 0;
             char *excl = strstr(apk_path, "!/");
-            if (excl) *excl = 0;
+            if (excl) { *excl = 0; LOGI("open: stripped apk_path=%s", apk_path); }
             char fd_str[16];
             snprintf(fd_str, sizeof(fd_str), "%d", sv[1]);
             char cmd[1024];
@@ -94,17 +98,23 @@ static int vdr2_open(void)
                 "rm -rf /data/local/tmp/lib 2>/dev/null; "
                 "/data/local/tmp/vdr2_helper %s",
                 apk_path, fd_str);
+            LOGI("open: cmd=%s", cmd);
             execlp("su", "su", "-c", cmd, NULL);
+            LOGE("open: execlp failed");
         }
+        LOGI("open: child exiting");
         _exit(1);
     }
     close(sv[1]);
     vdr2_proxy_pid = pid;
     vdr2_sock = sv[0];
+    LOGI("open: parent sock=%d pid=%d", vdr2_sock, (int)pid);
     if (vdr2_bell < 0) {
         vdr2_bell = eventfd(0, EFD_NONBLOCK);
-        if (vdr2_bell < 0) { close(vdr2_sock); vdr2_sock = -1; return -errno; }
+        LOGI("open: bell=%d", vdr2_bell);
+        if (vdr2_bell < 0) { LOGE("open: eventfd fail err=%d", errno); close(vdr2_sock); vdr2_sock = -1; return -errno; }
     }
+    LOGI("open: done");
     return 0;
 }
 
@@ -118,8 +128,10 @@ static int vdr2_ioctl_checked(unsigned long req, void *arg)
 static int vdr2_ioctl_checked_fds(unsigned long req, void *arg, int *fds, int nfds)
 {
     if (vdr2_open() < 0) return -ENODEV;
+    int nr = req & 0xFF;
     char arg_buf[128] = {0};
     if (arg) memcpy(arg_buf, arg, 128);
+    LOGI("ioctl: nr=%d nfds=%d arg[0]=%d", nr, nfds, arg?*(int*)arg:-1);
     struct iovec iov[2];
     iov[0].iov_base = &req;
     iov[0].iov_len = sizeof(req);
@@ -137,8 +149,10 @@ static int vdr2_ioctl_checked_fds(unsigned long req, void *arg, int *fds, int nf
         c->cmsg_type = SCM_RIGHTS;
         c->cmsg_len = CMSG_LEN(sizeof(int) * nfds);
         memcpy(CMSG_DATA(c), fds, sizeof(int) * nfds);
+        LOGI("ioctl: send fds[0]=%d nfds=%d", fds[0], nfds);
     }
-    if (sendmsg(vdr2_sock, &msg, 0) < 0) return -errno;
+    if (sendmsg(vdr2_sock, &msg, 0) < 0) { LOGE("ioctl: sendmsg fail err=%d", errno); return -errno; }
+    LOGI("ioctl: sendmsg ok");
     char cmsg_rcv[CMSG_SPACE(sizeof(int) * 3)] = {0};
     struct iovec iov_rcv;
     long ret;
@@ -149,24 +163,24 @@ static int vdr2_ioctl_checked_fds(unsigned long req, void *arg, int *fds, int nf
     msg_rcv.msg_iovlen = 1;
     msg_rcv.msg_control = cmsg_rcv;
     msg_rcv.msg_controllen = sizeof(cmsg_rcv);
-    if (recvmsg(vdr2_sock, &msg_rcv, 0) < 0) return -EIO;
-    LOGI("ioctl_rcv: ret=%ld controllen=%d", (long)ret, (int)msg_rcv.msg_controllen);
+    if (recvmsg(vdr2_sock, &msg_rcv, 0) < 0) { LOGE("ioctl: recvmsg fail err=%d", errno); return -EIO; }
+    LOGI("ioctl: recv ret=%ld controllen=%d", ret, (int)msg_rcv.msg_controllen);
     struct cmsghdr *c_rcv = CMSG_FIRSTHDR(&msg_rcv);
     if (c_rcv) {
-        LOGI("cmsg: level=%d type=%d len=%d", c_rcv->cmsg_level, c_rcv->cmsg_type, (int)c_rcv->cmsg_len);
-    }
-    if (c_rcv && c_rcv->cmsg_level == SOL_SOCKET && c_rcv->cmsg_type == SCM_RIGHTS) {
-        int rcv_fd;
-        memcpy(&rcv_fd, CMSG_DATA(c_rcv), sizeof(int));
-        LOGI("cmsg rcv_fd=%d", rcv_fd);
-        if (rcv_fd >= 0 && arg) {
-            int nr = req & 0xFF;
-            if (nr == 6 || nr == 7)
-                memcpy(arg, &rcv_fd, sizeof(int));
+        int rcv_fd = -1;
+        if (c_rcv->cmsg_level == SOL_SOCKET && c_rcv->cmsg_type == SCM_RIGHTS)
+            memcpy(&rcv_fd, CMSG_DATA(c_rcv), sizeof(int));
+        LOGI("ioctl: cmsg level=%d type=%d len=%d fd=%d", c_rcv->cmsg_level, c_rcv->cmsg_type, (int)c_rcv->cmsg_len, rcv_fd);
+        if (rcv_fd >= 0 && arg && (nr == 6 || nr == 7)) {
+            memcpy(arg, &rcv_fd, sizeof(int));
+            LOGI("ioctl: audio fd=%d", rcv_fd);
         }
+    } else {
+        LOGI("ioctl: no cmsg");
     }
-    if (ret < 0) return (int)ret;
-    if (arg) memcpy(arg, arg_buf, 128);
+    if (ret < 0) { LOGI("ioctl: fail ret=%ld", ret); return (int)ret; }
+    if (arg && nr != 6 && nr != 7) memcpy(arg, arg_buf, 128);
+    LOGI("ioctl: done nr=%d ret=%ld", nr, ret);
     return 0;
 }
 
@@ -233,13 +247,19 @@ static int vdrm_submit(int dmabuf_fd, int slot, unsigned stride)
     if (r < 0) return r;
     struct vdr2_reg_io reg = { dmabuf_fd, slot, vdr2_bell, stride };
     int fds[2] = { dmabuf_fd, vdr2_bell };
-    return vdr2_ioctl_checked_fds(VDR2_IOC_REGISTER_BUF, &reg, fds, 2);
+    LOGI("submit: slot=%d dmabuf_fd=%d bell=%d stride=%u", slot, dmabuf_fd, vdr2_bell, stride);
+    int ret = vdr2_ioctl_checked_fds(VDR2_IOC_REGISTER_BUF, &reg, fds, 2);
+    LOGI("submit: ret=%d", ret);
+    return ret;
 }
 
 static int vdrm_present(void)
 {
     int fds[1] = { vdr2_bell };
-    return vdr2_ioctl_checked_fds(VDR2_IOC_PRESENT, &vdr2_bell, fds, 1);
+    LOGI("present: bell=%d", vdr2_bell);
+    int ret = vdr2_ioctl_checked_fds(VDR2_IOC_PRESENT, &vdr2_bell, fds, 1);
+    LOGI("present: ret=%d", ret);
+    return ret;
 }
 
 /* Wait until the kernel rings the bell (a frame flip happened).
@@ -387,6 +407,7 @@ static void *audio_play_thread(void *arg)
 
     int fd = -1;
     int r = vdr2_ioctl_checked(VDR2_IOC_AUDIO_PLAY, &fd);
+    LOGI("audio_play: ioctl ret=%d fd=%d", r, fd);
     if (r < 0 || fd < 0) { LOGE("audio play ioctl failed ret=%d", r); return NULL; }
     c->play_fd = fd;
 
