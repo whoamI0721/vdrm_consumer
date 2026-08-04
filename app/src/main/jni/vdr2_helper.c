@@ -42,7 +42,28 @@ __attribute__((visibility("default"))) int main(int argc, char **argv)
         }
         long ret = ioctl(fd, req, arg_buf);
         if (ret < 0) ret = -errno;
-        if (write(sock, &ret, sizeof(ret)) != sizeof(ret)) break;
+        int out_fd = -1;
+        int nr = req & 0xFF;
+        if (ret == 0 && (nr == 6 || nr == 7)) {
+            memcpy(&out_fd, arg_buf, sizeof(int));
+        }
+        char cmsg_out[CMSG_SPACE(sizeof(int))] = {0};
+        struct iovec iov_out;
+        iov_out.iov_base = &ret;
+        iov_out.iov_len = sizeof(ret);
+        struct msghdr msg_out = {0};
+        msg_out.msg_iov = &iov_out;
+        msg_out.msg_iovlen = 1;
+        if (out_fd >= 0) {
+            msg_out.msg_control = cmsg_out;
+            msg_out.msg_controllen = sizeof(cmsg_out);
+            struct cmsghdr *co = CMSG_FIRSTHDR(&msg_out);
+            co->cmsg_level = SOL_SOCKET;
+            co->cmsg_type = SCM_RIGHTS;
+            co->cmsg_len = CMSG_LEN(sizeof(int));
+            memcpy(CMSG_DATA(co), &out_fd, sizeof(int));
+        }
+        if (sendmsg(sock, &msg_out, 0) < 0) break;
     }
     close(fd);
     close(sock);

@@ -139,8 +139,27 @@ static int vdr2_ioctl_checked_fds(unsigned long req, void *arg, int *fds, int nf
         memcpy(CMSG_DATA(c), fds, sizeof(int) * nfds);
     }
     if (sendmsg(vdr2_sock, &msg, 0) < 0) return -errno;
+    char cmsg_rcv[CMSG_SPACE(sizeof(int) * 3)] = {0};
+    struct iovec iov_rcv;
     long ret;
-    if (read(vdr2_sock, &ret, sizeof(ret)) != sizeof(ret)) return -EIO;
+    iov_rcv.iov_base = &ret;
+    iov_rcv.iov_len = sizeof(ret);
+    struct msghdr msg_rcv = {0};
+    msg_rcv.msg_iov = &iov_rcv;
+    msg_rcv.msg_iovlen = 1;
+    msg_rcv.msg_control = cmsg_rcv;
+    msg_rcv.msg_controllen = sizeof(cmsg_rcv);
+    if (recvmsg(vdr2_sock, &msg_rcv, 0) < 0) return -EIO;
+    struct cmsghdr *c_rcv = CMSG_FIRSTHDR(&msg_rcv);
+    if (c_rcv && c_rcv->cmsg_level == SOL_SOCKET && c_rcv->cmsg_type == SCM_RIGHTS) {
+        int rcv_fd;
+        memcpy(&rcv_fd, CMSG_DATA(c_rcv), sizeof(int));
+        if (rcv_fd >= 0 && arg) {
+            int nr = req & 0xFF;
+            if (nr == 6 || nr == 7)
+                memcpy(arg, &rcv_fd, sizeof(int));
+        }
+    }
     if (ret < 0) return (int)ret;
     if (arg) memcpy(arg, arg_buf, 128);
     return 0;
