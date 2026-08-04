@@ -108,6 +108,8 @@ static int vdr2_open(void)
     return 0;
 }
 
+static int vdr2_ioctl_checked_fds(unsigned long req, void *arg, int *fds, int nfds);
+
 static int vdr2_ioctl_checked(unsigned long req, void *arg)
 {
     return vdr2_ioctl_checked_fds(req, arg, NULL, 0);
