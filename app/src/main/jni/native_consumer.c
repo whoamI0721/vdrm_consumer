@@ -64,15 +64,13 @@ struct vdr2_reg_io   { int fd, slot, efd; unsigned stride; };
 #define VDR2_EV_MOTION 3
 #define VDR2_EV_SCROLL 4
 
-static int vdr2_fd = -1;
+static int vdr2_sock = -1;
+static pid_t vdr2_proxy_pid;
 static int vdr2_bell = -1;
 
 static int vdr2_open(void)
 {
-    if (vdr2_fd >= 0) return 0;
-    vdr2_fd = open(VDR2CTL_PATH, O_RDWR);
-    if (vdr2_fd >= 0) goto init_bell;
-    if (errno != EACCES && errno != EPERM) return -errno;
+    if (vdr2_sock >= 0) return 0;
     int sv[2];
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) return -errno;
     pid_t pid = fork();
@@ -101,30 +99,11 @@ static int vdr2_open(void)
         _exit(1);
     }
     close(sv[1]);
-    struct iovec iov;
-    char buf;
-    iov.iov_base = &buf;
-    iov.iov_len = 1;
-    char cmsg[CMSG_SPACE(sizeof(int))];
-    struct msghdr msg = {0};
-    msg.msg_iov = &iov;
-    msg.msg_iovlen = 1;
-    msg.msg_control = cmsg;
-    msg.msg_controllen = sizeof(cmsg);
-    ssize_t r = recvmsg(sv[0], &msg, 0);
-    close(sv[0]);
-    int status;
-    waitpid(pid, &status, 0);
-    if (r <= 0) return -EIO;
-    struct cmsghdr *c = CMSG_FIRSTHDR(&msg);
-    if (!c || c->cmsg_level != SOL_SOCKET || c->cmsg_type != SCM_RIGHTS)
-        return -EIO;
-    memcpy(&vdr2_fd, CMSG_DATA(c), sizeof(int));
-    if (vdr2_fd < 0) return -EIO;
-init_bell:
+    vdr2_proxy_pid = pid;
+    vdr2_sock = sv[0];
     if (vdr2_bell < 0) {
         vdr2_bell = eventfd(0, EFD_NONBLOCK);
-        if (vdr2_bell < 0) { close(vdr2_fd); vdr2_fd = -1; return -errno; }
+        if (vdr2_bell < 0) { close(vdr2_sock); vdr2_sock = -1; return -errno; }
     }
     return 0;
 }
@@ -132,8 +111,22 @@ init_bell:
 static int vdr2_ioctl_checked(unsigned long req, void *arg)
 {
     if (vdr2_open() < 0) return -ENODEV;
-    int r = ioctl(vdr2_fd, req, arg);
-    return r < 0 ? -errno : r;
+    char arg_buf[128] = {0};
+    if (arg) memcpy(arg_buf, arg, 128);
+    struct iovec iov[2];
+    iov[0].iov_base = &req;
+    iov[0].iov_len = sizeof(req);
+    iov[1].iov_base = arg_buf;
+    iov[1].iov_len = sizeof(arg_buf);
+    struct msghdr msg = {0};
+    msg.msg_iov = iov;
+    msg.msg_iovlen = 2;
+    if (sendmsg(vdr2_sock, &msg, 0) < 0) return -errno;
+    long ret;
+    if (read(vdr2_sock, &ret, sizeof(ret)) != sizeof(ret)) return -EIO;
+    if (ret < 0) return (int)ret;
+    if (arg) memcpy(arg, arg_buf, 128);
+    return 0;
 }
 
 /* ---- Event helpers ---- */

@@ -3,36 +3,35 @@
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <sys/socket.h>
 #include <errno.h>
+#include <sys/socket.h>
+#include <sys/uio.h>
+#include <sys/ioctl.h>
 
 int main(int argc, char **argv)
 {
     if (argc < 2) return 1;
-    int sock_fd = atoi(argv[1]);
-    if (sock_fd < 0) return 1;
+    int sock = atoi(argv[1]);
     int fd = open("/dev/vdr2ctl", O_RDWR);
     if (fd < 0) return 1;
-    struct iovec iov;
-    char buf = 0;
-    iov.iov_base = &buf;
-    iov.iov_len = 1;
-    char cmsg[CMSG_SPACE(sizeof(int))];
-    struct msghdr msg = {0};
-    msg.msg_iov = &iov;
-    msg.msg_iovlen = 1;
-    msg.msg_control = cmsg;
-    msg.msg_controllen = sizeof(cmsg);
-    struct cmsghdr *c = CMSG_FIRSTHDR(&msg);
-    c->cmsg_level = SOL_SOCKET;
-    c->cmsg_type = SCM_RIGHTS;
-    c->cmsg_len = CMSG_LEN(sizeof(int));
-    int fd_copy = fd;
-    memcpy(CMSG_DATA(c), &fd_copy, sizeof(int));
-    if (sendmsg(sock_fd, &msg, 0) < 0) {
-        close(fd);
-        return 1;
+    for (;;) {
+        unsigned long req;
+        char arg_buf[128];
+        struct iovec iov[2];
+        iov[0].iov_base = &req;
+        iov[0].iov_len = sizeof(req);
+        iov[1].iov_base = arg_buf;
+        iov[1].iov_len = sizeof(arg_buf);
+        struct msghdr msg = {0};
+        msg.msg_iov = iov;
+        msg.msg_iovlen = 2;
+        ssize_t n = recvmsg(sock, &msg, 0);
+        if (n <= 0) break;
+        long ret = ioctl(fd, req, arg_buf);
+        if (ret < 0) ret = -errno;
+        if (write(sock, &ret, sizeof(ret)) != sizeof(ret)) break;
     }
     close(fd);
+    close(sock);
     return 0;
 }
