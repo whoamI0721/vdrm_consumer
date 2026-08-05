@@ -54,7 +54,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         }
 
         /* Foreground notification (prevents Android from killing us) */
-        requestNotificationPermission();
+        requestPermissions();
         startForegroundService();
 
         /* Layout: surface + keyboard overlay */
@@ -270,15 +270,26 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         }
     }
 
-    /* ---- Notification Permission ---- */
+    /* ---- Permissions ---- */
 
-    private void requestNotificationPermission() {
+    private void requestPermissions() {
+        boolean needNotify = false, needAudio = false;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
                     != PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(
-                    new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 1001);
+                needNotify = true;
             }
+        }
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+            needAudio = true;
+        }
+        if (needNotify || needAudio) {
+            String[] perms = new String[(needNotify ? 1 : 0) + (needAudio ? 1 : 0)];
+            int i = 0;
+            if (needNotify) perms[i++] = android.Manifest.permission.POST_NOTIFICATIONS;
+            if (needAudio)  perms[i++] = android.Manifest.permission.RECORD_AUDIO;
+            requestPermissions(perms, 1001);
         }
     }
 
@@ -286,9 +297,13 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     public void onRequestPermissionsResult(int requestCode, String[] permissions,
                                            int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == 1001 && grantResults.length > 0
-                && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-            startForegroundService();
+        if (requestCode == 1001) {
+            for (int i = 0; i < grantResults.length; i++) {
+                if (permissions[i].equals(android.Manifest.permission.POST_NOTIFICATIONS)
+                        && grantResults[i] == PackageManager.PERMISSION_GRANTED) {
+                    startForegroundService();
+                }
+            }
         }
     }
 

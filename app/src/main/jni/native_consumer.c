@@ -67,6 +67,7 @@ struct vdr2_reg_io   { int fd, slot, efd; unsigned stride; };
 static int vdr2_sock = -1;
 static pid_t vdr2_proxy_pid;
 static int vdr2_bell = -1;
+static pthread_mutex_t vdr2_sock_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static int vdr2_open(void)
 {
@@ -80,14 +81,25 @@ static int vdr2_open(void)
     if (pid == 0) {
         LOGI("open: child started");
         close(sv[0]);
-        Dl_info info;
-        if (dladdr((void *)vdr2_open, &info) && info.dli_fname) {
-            LOGI("open: dli_fname=%s", info.dli_fname);
-            char apk_path[512];
-            strncpy(apk_path, info.dli_fname, sizeof(apk_path) - 1);
-            apk_path[sizeof(apk_path) - 1] = 0;
-            char *excl = strstr(apk_path, "!/");
-            if (excl) { *excl = 0; LOGI("open: stripped apk_path=%s", apk_path); }
+        char apk_path[512] = {0};
+        FILE *maps = fopen("/proc/self/maps", "r");
+        if (maps) {
+            char line[512];
+            while (fgets(line, sizeof(line), maps)) {
+                if (strstr(line, ".apk")) {
+                    char *path = strchr(line, '/');
+                    if (!path) continue;
+                    char *end = strstr(path, "!/");
+                    if (!end) end = strchr(path, '\n');
+                    if (end) *end = 0;
+                    if (strstr(path, "base.apk") || !apk_path[0]) {
+                        strncpy(apk_path, path, sizeof(apk_path) - 1);
+                        if (strstr(path, "base.apk")) break;
+                    }
+                }
+            }
+            fclose(maps);
+        }
             char fd_str[16];
             snprintf(fd_str, sizeof(fd_str), "%d", sv[1]);
             char cmd[1024];
@@ -128,10 +140,13 @@ static int vdr2_ioctl_checked(unsigned long req, void *arg)
 static int vdr2_ioctl_checked_fds(unsigned long req, void *arg, int *fds, int nfds)
 {
     if (vdr2_open() < 0) return -ENODEV;
+    pthread_mutex_lock(&vdr2_sock_lock);
     int nr = req & 0xFF;
+    int arg_size = (req >> 16) & 0x3FFF;
+    if (arg_size > 128) arg_size = 128;
     char arg_buf[128] = {0};
-    if (arg) memcpy(arg_buf, arg, 128);
-    LOGI("ioctl: nr=%d nfds=%d arg[0]=%d", nr, nfds, arg?*(int*)arg:-1);
+    if (arg && arg_size > 0) memcpy(arg_buf, arg, arg_size);
+    LOGI("ioctl: nr=%d nfds=%d arg_size=%d arg[0]=%d", nr, nfds, arg_size, arg?*(int*)arg:-1);
     struct iovec iov[2];
     iov[0].iov_base = &req;
     iov[0].iov_len = sizeof(req);
@@ -151,7 +166,11 @@ static int vdr2_ioctl_checked_fds(unsigned long req, void *arg, int *fds, int nf
         memcpy(CMSG_DATA(c), fds, sizeof(int) * nfds);
         LOGI("ioctl: send fds[0]=%d nfds=%d", fds[0], nfds);
     }
-    if (sendmsg(vdr2_sock, &msg, 0) < 0) { LOGE("ioctl: sendmsg fail err=%d", errno); return -errno; }
+    {
+        int sr;
+        do { sr = sendmsg(vdr2_sock, &msg, 0); } while (sr < 0 && errno == EINTR);
+        if (sr < 0) { LOGE("ioctl: sendmsg fail err=%d", errno); pthread_mutex_unlock(&vdr2_sock_lock); return -errno; }
+    }
     LOGI("ioctl: sendmsg ok");
     char cmsg_rcv[CMSG_SPACE(sizeof(int) * 3)] = {0};
     struct iovec iov_rcv;
@@ -163,7 +182,11 @@ static int vdr2_ioctl_checked_fds(unsigned long req, void *arg, int *fds, int nf
     msg_rcv.msg_iovlen = 1;
     msg_rcv.msg_control = cmsg_rcv;
     msg_rcv.msg_controllen = sizeof(cmsg_rcv);
-    if (recvmsg(vdr2_sock, &msg_rcv, 0) < 0) { LOGE("ioctl: recvmsg fail err=%d", errno); return -EIO; }
+    {
+        int rr;
+        do { rr = recvmsg(vdr2_sock, &msg_rcv, 0); } while (rr < 0 && errno == EINTR);
+        if (rr < 0) { LOGE("ioctl: recvmsg fail err=%d", errno); pthread_mutex_unlock(&vdr2_sock_lock); return -EIO; }
+    }
     LOGI("ioctl: recv ret=%ld controllen=%d", ret, (int)msg_rcv.msg_controllen);
     struct cmsghdr *c_rcv = CMSG_FIRSTHDR(&msg_rcv);
     if (c_rcv) {
@@ -178,9 +201,10 @@ static int vdr2_ioctl_checked_fds(unsigned long req, void *arg, int *fds, int nf
     } else {
         LOGI("ioctl: no cmsg");
     }
-    if (ret < 0) { LOGI("ioctl: fail ret=%ld", ret); return (int)ret; }
-    if (arg && nr != 6 && nr != 7) memcpy(arg, arg_buf, 128);
+    if (ret < 0) { LOGI("ioctl: fail ret=%ld", ret); pthread_mutex_unlock(&vdr2_sock_lock); return (int)ret; }
+    if (arg && arg_size > 0 && nr != 6 && nr != 7) memcpy(arg, arg_buf, arg_size);
     LOGI("ioctl: done nr=%d ret=%ld", nr, ret);
+    pthread_mutex_unlock(&vdr2_sock_lock);
     return 0;
 }
 
