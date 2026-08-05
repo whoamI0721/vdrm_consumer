@@ -72,12 +72,8 @@ static int vdr2_bell_registered;
 static int vdr2_open(void)
 {
     if (vdr2_fd >= 0) return 0;
-    /* Switch to ksu domain via su (requires root/KSU) */
-    {
-        char cmd[128];
-        snprintf(cmd, sizeof(cmd), "su -c 'echo u:r:ksu:s0 > /proc/%d/attr/current'", getpid());
-        system(cmd);
-    }
+    /* Fix permissions: KPM creates device with 600, need 666 for APK access */
+    system("su -c 'chmod 0666 /dev/vdr2ctl 2>/dev/null'");
     vdr2_fd = open("/dev/vdr2ctl", O_RDWR);
     if (vdr2_fd < 0) {
         LOGE("open: open /dev/vdr2ctl failed err=%d", errno);
