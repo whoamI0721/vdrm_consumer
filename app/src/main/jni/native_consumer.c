@@ -116,7 +116,6 @@ static int vdr2_open(void)
             LOGI("open: child exiting");
             _exit(1);
         }
-    }
     close(sv[1]);
     vdr2_proxy_pid = pid;
     vdr2_sock = sv[0];
