@@ -113,9 +113,9 @@ static int vdr2_open(void)
             LOGI("open: cmd=%s", cmd);
             execlp("su", "su", "-c", cmd, NULL);
             LOGE("open: execlp failed");
+            LOGI("open: child exiting");
+            _exit(1);
         }
-        LOGI("open: child exiting");
-        _exit(1);
     }
     close(sv[1]);
     vdr2_proxy_pid = pid;
