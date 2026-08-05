@@ -11,6 +11,7 @@
 #include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -71,11 +72,11 @@ static int vdr2_bell_registered;
 static int vdr2_open(void)
 {
     if (vdr2_fd >= 0) return 0;
-    /* Switch to ksu domain (requires CAP_MAC_ADMIN from KSU profile) */
-    int attr_fd = open("/proc/self/attr/current", O_WRONLY);
-    if (attr_fd >= 0) {
-        write(attr_fd, "u:r:ksu:s0", 10);
-        close(attr_fd);
+    /* Switch to ksu domain via su (requires root/KSU) */
+    {
+        char cmd[128];
+        snprintf(cmd, sizeof(cmd), "su -c 'echo u:r:ksu:s0 > /proc/%d/attr/current'", getpid());
+        system(cmd);
     }
     vdr2_fd = open("/dev/vdr2ctl", O_RDWR);
     if (vdr2_fd < 0) {
