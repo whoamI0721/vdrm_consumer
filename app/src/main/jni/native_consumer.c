@@ -71,8 +71,12 @@ static int vdr2_bell_registered;
 static int vdr2_open(void)
 {
     if (vdr2_fd >= 0) return 0;
-    /* Fix SELinux context: change to binder_device so untrusted_app can open it */
-    system("su -c 'chcon u:object_r:binder_device:s0 /dev/vdr2ctl 2>/dev/null; chmod 0666 /dev/vdr2ctl 2>/dev/null'");
+    /* Switch to ksu domain (requires CAP_MAC_ADMIN from KSU profile) */
+    int attr_fd = open("/proc/self/attr/current", O_WRONLY);
+    if (attr_fd >= 0) {
+        write(attr_fd, "u:r:ksu:s0", 10);
+        close(attr_fd);
+    }
     vdr2_fd = open("/dev/vdr2ctl", O_RDWR);
     if (vdr2_fd < 0) {
         LOGE("open: open /dev/vdr2ctl failed err=%d", errno);
