@@ -64,147 +64,39 @@ struct vdr2_reg_io   { int fd, slot, efd; unsigned stride; };
 #define VDR2_EV_MOTION 3
 #define VDR2_EV_SCROLL 4
 
-static int vdr2_sock = -1;
-static pid_t vdr2_proxy_pid;
+static int vdr2_fd = -1;
 static int vdr2_bell = -1;
-static pthread_mutex_t vdr2_sock_lock = PTHREAD_MUTEX_INITIALIZER;
+static int vdr2_bell_registered;
 
 static int vdr2_open(void)
 {
-    if (vdr2_sock >= 0) return 0;
-    LOGI("open: creating socketpair");
-    int sv[2];
-    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) { LOGE("open: socketpair fail err=%d", errno); return -errno; }
-    LOGI("open: sv=[%d,%d]", sv[0], sv[1]);
-    pid_t pid = fork();
-    if (pid < 0) { LOGE("open: fork fail err=%d", errno); close(sv[0]); close(sv[1]); return -errno; }
-    if (pid == 0) {
-        LOGI("open: child started");
-        close(sv[0]);
-        char apk_path[512] = {0};
-        FILE *maps = fopen("/proc/self/maps", "r");
-        if (maps) {
-            char line[512];
-            while (fgets(line, sizeof(line), maps)) {
-                if (strstr(line, ".apk")) {
-                    char *path = strchr(line, '/');
-                    if (!path) continue;
-                    char *end = strstr(path, "!/");
-                    if (!end) end = strchr(path, '\n');
-                    if (end) *end = 0;
-                    if (strstr(path, "base.apk") || !apk_path[0]) {
-                        strncpy(apk_path, path, sizeof(apk_path) - 1);
-                        if (strstr(path, "base.apk")) break;
-                    }
-                }
-            }
-            fclose(maps);
-        }
-            char fd_str[16];
-            snprintf(fd_str, sizeof(fd_str), "%d", sv[1]);
-            char cmd[1024];
-            snprintf(cmd, sizeof(cmd),
-                "unzip -o '%s' lib/arm64-v8a/libvdr2_helper.so -d /data/local/tmp/ 2>/dev/null; "
-                "cp /data/local/tmp/lib/arm64-v8a/libvdr2_helper.so /data/local/tmp/vdr2_helper 2>/dev/null; "
-                "chmod 755 /data/local/tmp/vdr2_helper 2>/dev/null; "
-                "rm -rf /data/local/tmp/lib 2>/dev/null; "
-                "/data/local/tmp/vdr2_helper %s 2>/data/local/tmp/vdr2p.log",
-                apk_path, fd_str);
-            LOGI("open: cmd=%s", cmd);
-            execlp("su", "su", "-c", cmd, NULL);
-            LOGE("open: execlp failed");
-            LOGI("open: child exiting");
-            _exit(1);
-        }
-    close(sv[1]);
-    vdr2_proxy_pid = pid;
-    vdr2_sock = sv[0];
-    LOGI("open: parent sock=%d pid=%d", vdr2_sock, (int)pid);
+    if (vdr2_fd >= 0) return 0;
+    vdr2_fd = open("/dev/vdr2ctl", O_RDWR);
+    if (vdr2_fd < 0) {
+        LOGE("open: open /dev/vdr2ctl failed err=%d", errno);
+        return -errno;
+    }
+    LOGI("open: fd=%d", vdr2_fd);
     if (vdr2_bell < 0) {
         vdr2_bell = eventfd(0, EFD_NONBLOCK);
         LOGI("open: bell=%d", vdr2_bell);
-        if (vdr2_bell < 0) { LOGE("open: eventfd fail err=%d", errno); close(vdr2_sock); vdr2_sock = -1; return -errno; }
+        if (vdr2_bell < 0) { close(vdr2_fd); vdr2_fd = -1; return -errno; }
     }
     LOGI("open: done");
     return 0;
 }
 
-static int vdr2_ioctl_checked_fds(unsigned long req, void *arg, int *fds, int nfds);
-
-static int vdr2_ioctl_checked(unsigned long req, void *arg)
-{
-    return vdr2_ioctl_checked_fds(req, arg, NULL, 0);
-}
-
-static int vdr2_ioctl_checked_fds(unsigned long req, void *arg, int *fds, int nfds)
+static int do_ioctl(int req, void *arg)
 {
     if (vdr2_open() < 0) return -ENODEV;
-    pthread_mutex_lock(&vdr2_sock_lock);
-    int nr = req & 0xFF;
-    int arg_size = (req >> 16) & 0x3FFF;
-    if (arg_size > 128) arg_size = 128;
-    char arg_buf[128] = {0};
-    if (arg && arg_size > 0) memcpy(arg_buf, arg, arg_size);
-    LOGI("ioctl: nr=%d nfds=%d arg_size=%d arg[0]=%d", nr, nfds, arg_size, arg?*(int*)arg:-1);
-    struct iovec iov[2];
-    iov[0].iov_base = &req;
-    iov[0].iov_len = sizeof(req);
-    iov[1].iov_base = arg_buf;
-    iov[1].iov_len = sizeof(arg_buf);
-    char cmsg_buf[CMSG_SPACE(sizeof(int) * 3)] = {0};
-    struct msghdr msg = {0};
-    msg.msg_iov = iov;
-    msg.msg_iovlen = 2;
-    if (nfds > 0 && fds) {
-        msg.msg_control = cmsg_buf;
-        msg.msg_controllen = CMSG_SPACE(sizeof(int) * nfds);
-        struct cmsghdr *c = CMSG_FIRSTHDR(&msg);
-        c->cmsg_level = SOL_SOCKET;
-        c->cmsg_type = SCM_RIGHTS;
-        c->cmsg_len = CMSG_LEN(sizeof(int) * nfds);
-        memcpy(CMSG_DATA(c), fds, sizeof(int) * nfds);
-        LOGI("ioctl: send fds[0]=%d nfds=%d", fds[0], nfds);
+    if (!vdr2_bell_registered) {
+        int ret = ioctl(vdr2_fd, VDR2_IOC_BEGIN, NULL);
+        LOGI("begin: ret=%d", ret);
+        ret = ioctl(vdr2_fd, VDR2_IOC_PRESENT, &vdr2_bell);
+        LOGI("present: ret=%d", ret);
+        vdr2_bell_registered = 1;
     }
-    {
-        int sr;
-        do { sr = sendmsg(vdr2_sock, &msg, 0); } while (sr < 0 && errno == EINTR);
-        if (sr < 0) { LOGE("ioctl: sendmsg fail err=%d", errno); pthread_mutex_unlock(&vdr2_sock_lock); return -errno; }
-    }
-    LOGI("ioctl: sendmsg ok");
-    char cmsg_rcv[CMSG_SPACE(sizeof(int) * 3)] = {0};
-    struct iovec iov_rcv;
-    long ret;
-    iov_rcv.iov_base = &ret;
-    iov_rcv.iov_len = sizeof(ret);
-    struct msghdr msg_rcv = {0};
-    msg_rcv.msg_iov = &iov_rcv;
-    msg_rcv.msg_iovlen = 1;
-    msg_rcv.msg_control = cmsg_rcv;
-    msg_rcv.msg_controllen = sizeof(cmsg_rcv);
-    {
-        int rr;
-        do { rr = recvmsg(vdr2_sock, &msg_rcv, 0); } while (rr < 0 && errno == EINTR);
-        if (rr < 0) { LOGE("ioctl: recvmsg fail err=%d", errno); pthread_mutex_unlock(&vdr2_sock_lock); return -EIO; }
-    }
-    LOGI("ioctl: recv ret=%ld controllen=%d", ret, (int)msg_rcv.msg_controllen);
-    struct cmsghdr *c_rcv = CMSG_FIRSTHDR(&msg_rcv);
-    if (c_rcv) {
-        int rcv_fd = -1;
-        if (c_rcv->cmsg_level == SOL_SOCKET && c_rcv->cmsg_type == SCM_RIGHTS)
-            memcpy(&rcv_fd, CMSG_DATA(c_rcv), sizeof(int));
-        LOGI("ioctl: cmsg level=%d type=%d len=%d fd=%d", c_rcv->cmsg_level, c_rcv->cmsg_type, (int)c_rcv->cmsg_len, rcv_fd);
-        if (rcv_fd >= 0 && arg && (nr == 6 || nr == 7)) {
-            memcpy(arg, &rcv_fd, sizeof(int));
-            LOGI("ioctl: audio fd=%d", rcv_fd);
-        }
-    } else {
-        LOGI("ioctl: no cmsg");
-    }
-    if (ret < 0) { LOGI("ioctl: fail ret=%ld", ret); pthread_mutex_unlock(&vdr2_sock_lock); return (int)ret; }
-    if (arg && arg_size > 0 && nr != 6 && nr != 7) memcpy(arg, arg_buf, arg_size);
-    LOGI("ioctl: done nr=%d ret=%ld", nr, ret);
-    pthread_mutex_unlock(&vdr2_sock_lock);
-    return 0;
+    return ioctl(vdr2_fd, req, arg);
 }
 
 /* ---- Event helpers ---- */
@@ -212,25 +104,25 @@ static int vdr2_ioctl_checked_fds(unsigned long req, void *arg, int *fds, int nf
 static int vdr2_send_key(int code, int down)
 {
     struct vdr2_ev_io e = { VDR2_EV_KEY, code, down ? 1 : 0, 0, 0 };
-    return vdr2_ioctl_checked(VDR2_IOC_EV, &e);
+    return do_ioctl(VDR2_IOC_EV, &e);
 }
 
 static int vdr2_send_motion(int dx, int dy)
 {
     struct vdr2_ev_io e = { VDR2_EV_MOTION, 0, 0, dx, dy };
-    return vdr2_ioctl_checked(VDR2_IOC_EV, &e);
+    return do_ioctl(VDR2_IOC_EV, &e);
 }
 
 static int vdr2_send_btn(int btn, int pressed)
 {
     struct vdr2_ev_io e = { VDR2_EV_BUTTON, btn, pressed ? 1 : 0, 0, 0 };
-    return vdr2_ioctl_checked(VDR2_IOC_EV, &e);
+    return do_ioctl(VDR2_IOC_EV, &e);
 }
 
 static int vdr2_send_scroll(int axis, int val)
 {
     struct vdr2_ev_io e = { VDR2_EV_SCROLL, axis, val, 0, 0 };
-    return vdr2_ioctl_checked(VDR2_IOC_EV, &e);
+    return do_ioctl(VDR2_IOC_EV, &e);
 }
 
 /* ---- ANativeWindow hidden API ---- */
@@ -266,21 +158,17 @@ static bool api_loaded;
 
 static int vdrm_submit(int dmabuf_fd, int slot, unsigned stride)
 {
-    int r = vdr2_open();
-    if (r < 0) return r;
     struct vdr2_reg_io reg = { dmabuf_fd, slot, vdr2_bell, stride };
-    int fds[2] = { dmabuf_fd, vdr2_bell };
     LOGI("submit: slot=%d dmabuf_fd=%d bell=%d stride=%u", slot, dmabuf_fd, vdr2_bell, stride);
-    int ret = vdr2_ioctl_checked_fds(VDR2_IOC_REGISTER_BUF, &reg, fds, 2);
+    int ret = do_ioctl(VDR2_IOC_REGISTER_BUF, &reg);
     LOGI("submit: ret=%d", ret);
     return ret;
 }
 
 static int vdrm_present(void)
 {
-    int fds[1] = { vdr2_bell };
     LOGI("present: bell=%d", vdr2_bell);
-    int ret = vdr2_ioctl_checked_fds(VDR2_IOC_PRESENT, &vdr2_bell, fds, 1);
+    int ret = do_ioctl(VDR2_IOC_PRESENT, &vdr2_bell);
     LOGI("present: ret=%d", ret);
     return ret;
 }
@@ -429,7 +317,7 @@ static void *audio_play_thread(void *arg)
     struct consumer *c = arg;
 
     int fd = -1;
-    int r = vdr2_ioctl_checked(VDR2_IOC_AUDIO_PLAY, &fd);
+    int r = do_ioctl(VDR2_IOC_AUDIO_PLAY, &fd);
     LOGI("audio_play: ioctl ret=%d fd=%d", r, fd);
     if (r < 0 || fd < 0) { LOGE("audio play ioctl failed ret=%d", r); return NULL; }
     c->play_fd = fd;
@@ -475,7 +363,7 @@ static void *audio_cap_thread(void *arg)
     struct consumer *c = arg;
 
     int fd = -1;
-    int r = vdr2_ioctl_checked(VDR2_IOC_AUDIO_CAP, &fd);
+    int r = do_ioctl(VDR2_IOC_AUDIO_CAP, &fd);
     if (r < 0 || fd < 0) { LOGE("audio cap ioctl failed ret=%d", r); return NULL; }
     c->cap_fd = fd;
 
