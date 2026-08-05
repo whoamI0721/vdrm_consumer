@@ -72,9 +72,7 @@ static int vdr2_open(void)
 {
     if (vdr2_fd >= 0) return 0;
     /* Fix SELinux context: change to binder_device so untrusted_app can open it */
-    if (system("su -c 'chcon u:object_r:binder_device:s0 /dev/vdr2ctl 2>/dev/null'") != 0) {
-        LOGW("open: chcon failed (may already be correct context)");
-    }
+    system("su -c 'chcon u:object_r:binder_device:s0 /dev/vdr2ctl 2>/dev/null; chmod 0666 /dev/vdr2ctl 2>/dev/null'");
     vdr2_fd = open("/dev/vdr2ctl", O_RDWR);
     if (vdr2_fd < 0) {
         LOGE("open: open /dev/vdr2ctl failed err=%d", errno);
