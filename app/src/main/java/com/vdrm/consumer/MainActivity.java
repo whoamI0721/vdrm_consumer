@@ -148,9 +148,6 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private String ensureDaemon() {
         try {
             File dst = new File(getFilesDir(), "vdr2d");
-            if (dst.exists() && dst.length() > 0) {
-                return dst.getAbsolutePath();
-            }
             File src = new File(getApplicationInfo().nativeLibraryDir, "libvdr2d.so");
             long srcLen = -1;
             if (src.exists()) {
@@ -165,7 +162,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                     zf.close();
                 }
             }
-            if (dst.exists() && dst.length() == srcLen) {
+            if (dst.exists() && srcLen > 0 && dst.length() == srcLen) {
                 return dst.getAbsolutePath();
             }
             if (src.exists()) {

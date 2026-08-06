@@ -157,6 +157,16 @@ static int proxy_spawn(void)
             dprintf(mf, "child pid=%d uid=%d euid=%d\n", getpid(), getuid(), geteuid());
             close(mf);
         }
+        /* Capture su's stdout/stderr so we can see why it exits 127
+         * (usage message, authorization refusal, exec error...). */
+        char slog[560];
+        snprintf(slog, sizeof(slog), "%s.spawnlog", proxy.sock_path);
+        int sf = open(slog, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        if (sf >= 0) {
+            dup2(sf, STDOUT_FILENO);
+            dup2(sf, STDERR_FILENO);
+            close(sf);
+        }
         execl("/system/bin/su", "su", "-c", cmd, (char *)NULL);
         int e = errno;
         mf = open(mark, O_WRONLY | O_APPEND, 0666);
