@@ -29,7 +29,7 @@
 #include "vdr2_proto.h"
 
 #define VDR2CTL_PATH  "/dev/vdr2ctl"
-#define VDR2_LOG_PATH "/data/user_de/0/com.vdrm.consumer/files/vdr2d.log"
+#define VDR2_LOG_PATH "/data/data/com.vdrm.consumer/files/vdr2d.log"
 
 #define VDR2_IOC(cmd) ((cmd) & 0xFF)
 
