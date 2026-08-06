@@ -152,6 +152,22 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 return dst.getAbsolutePath();
             }
             File src = new File(getApplicationInfo().nativeLibraryDir, "libvdr2d.so");
+            long srcLen = -1;
+            if (src.exists()) {
+                srcLen = src.length();
+            } else {
+                String entry = "lib/" + Build.SUPPORTED_ABIS[0] + "/libvdr2d.so";
+                ZipFile zf = new ZipFile(getApplicationInfo().sourceDir);
+                try {
+                    ZipEntry e = zf.getEntry(entry);
+                    if (e != null) srcLen = e.getSize();
+                } finally {
+                    zf.close();
+                }
+            }
+            if (dst.exists() && dst.length() == srcLen) {
+                return dst.getAbsolutePath();
+            }
             if (src.exists()) {
                 copyTo(src, dst);
                 Log.i(TAG, "vdr2d extracted from nativeLibraryDir");
