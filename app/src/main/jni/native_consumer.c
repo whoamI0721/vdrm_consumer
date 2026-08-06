@@ -100,8 +100,15 @@ static void proxy_down(void)
     if (proxy.sock >= 0) close(proxy.sock);
     proxy.sock = -1;
     if (proxy.child > 0) {
-        waitpid(proxy.child, NULL, WNOHANG);
-        proxy.child = -1;
+        int st = 0;
+        pid_t r = waitpid(proxy.child, &st, WNOHANG);
+        if (r == proxy.child) {
+            if (WIFEXITED(st))
+                LOGI("proxy: child %d exited=%d", proxy.child, WEXITSTATUS(st));
+            else if (WIFSIGNALED(st))
+                LOGI("proxy: child %d signaled=%d", proxy.child, WTERMSIG(st));
+            proxy.child = -1;
+        }
     }
     vdr2_bell_registered = 0;
 }
@@ -143,7 +150,20 @@ static int proxy_spawn(void)
     pid_t pid = fork();
     if (pid < 0) return -errno;
     if (pid == 0) {
+        char mark[560];
+        snprintf(mark, sizeof(mark), "%s.mark", proxy.sock_path);
+        int mf = open(mark, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        if (mf >= 0) {
+            dprintf(mf, "child pid=%d uid=%d euid=%d\n", getpid(), getuid(), geteuid());
+            close(mf);
+        }
         execl("/system/bin/su", "su", "-c", cmd, (char *)NULL);
+        int e = errno;
+        mf = open(mark, O_WRONLY | O_APPEND, 0666);
+        if (mf >= 0) {
+            dprintf(mf, "exec su failed errno=%d\n", e);
+            close(mf);
+        }
         _exit(127);
     }
     proxy.child = pid;
