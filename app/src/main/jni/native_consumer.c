@@ -69,23 +69,33 @@ struct vdr2_reg_io   { int fd, slot, efd; unsigned stride; };
 static int vdr2_bell = -1;
 static int vdr2_bell_registered;
 
-/* ---- vdr2d root proxy (unix socket + SCM_RIGHTS) ----
- * untrusted_app cannot open /dev/vdr2ctl. The app spawns the vdr2d daemon
- * via `su -c "<files>/vdr2d <sockfd>"` (u:r:ksu:s0); the daemon holds the
- * device fd and runs every guard-booth ioctl. Eventfd / dma-buf arguments
- * are passed with SCM_RIGHTS, out-fds (AUDIO_*) come back the same way. */
+/* ---- vdr2d root proxy (named unix socket + SCM_RIGHTS) ----
+ * untrusted_app cannot open /dev/vdr2ctl. The app binds a named
+ * SOCK_SEQPACKET socket in its files dir, spawns the vdr2d daemon via
+ * `su -c "<files>/vdr2d --connect <sockpath>"` (u:r:ksu:s0); the daemon
+ * connects, opens the device itself and runs every guard-booth ioctl.
+ * Eventfd / dma-buf arguments are passed with SCM_RIGHTS, out-fds
+ * (AUDIO_*) come back the same way. A named socket (not socketpair fd
+ * passing) is required because the root executor (su / Sui) does not
+ * inherit the app's fd. */
 
 #define VDR2_IOC_NR(cmd) ((cmd) & 0xFF)
 
+#define VDR2_CONNECT_TIMEOUT_MS 1500
+
 struct vdr2_proxy {
     int sock;
+    int listen;
     pid_t child;
     char daemon_path[512];
+    char sock_path[512];
 };
 
-static struct vdr2_proxy proxy = { .sock = -1, .child = -1, .daemon_path = {0} };
+static struct vdr2_proxy proxy = {
+    .sock = -1, .listen = -1, .child = -1, .daemon_path = {0},
+};
 
-static int proxy_down(void)
+static void proxy_down(void)
 {
     if (proxy.sock >= 0) close(proxy.sock);
     proxy.sock = -1;
@@ -94,7 +104,6 @@ static int proxy_down(void)
         proxy.child = -1;
     }
     vdr2_bell_registered = 0;
-    return -EPIPE;
 }
 
 static int proxy_spawn(void)
@@ -104,25 +113,59 @@ static int proxy_spawn(void)
         LOGE("proxy: no daemon path");
         return -EINVAL;
     }
-    int sv[2];
-    if (socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sv) < 0) return -errno;
-    pid_t pid = fork();
-    if (pid < 0) {
-        close(sv[0]);
-        close(sv[1]);
-        return -errno;
+    if (proxy.listen < 0) {
+        snprintf(proxy.sock_path, sizeof(proxy.sock_path), "%s.sock",
+                 proxy.daemon_path);
+        unlink(proxy.sock_path);
+        proxy.listen = socket(AF_UNIX, SOCK_SEQPACKET, 0);
+        if (proxy.listen < 0) return -errno;
+        struct sockaddr_un sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sun_family = AF_UNIX;
+        snprintf(sa.sun_path, sizeof(sa.sun_path), "%s", proxy.sock_path);
+        if (bind(proxy.listen, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
+            LOGE("proxy: bind %s failed err=%d", proxy.sock_path, errno);
+            close(proxy.listen);
+            proxy.listen = -1;
+            return -errno;
+        }
+        if (listen(proxy.listen, 4) < 0) {
+            LOGE("proxy: listen failed err=%d", errno);
+            close(proxy.listen);
+            proxy.listen = -1;
+            return -errno;
+        }
+        LOGI("proxy: listening on %s", proxy.sock_path);
     }
+    char cmd[600];
+    snprintf(cmd, sizeof(cmd), "%s --connect %s",
+             proxy.daemon_path, proxy.sock_path);
+    pid_t pid = fork();
+    if (pid < 0) return -errno;
     if (pid == 0) {
-        close(sv[0]);
-        char cmd[600];
-        snprintf(cmd, sizeof(cmd), "%s %d", proxy.daemon_path, sv[1]);
         execl("/system/bin/su", "su", "-c", cmd, (char *)NULL);
         _exit(127);
     }
-    close(sv[1]);
-    proxy.sock = sv[0];
     proxy.child = pid;
-    LOGI("proxy: spawned pid=%d sock=%d", pid, proxy.sock);
+    LOGI("proxy: spawned pid=%d", pid);
+
+    struct pollfd pfd;
+    pfd.fd = proxy.listen;
+    pfd.events = POLLIN;
+    int pr = poll(&pfd, 1, VDR2_CONNECT_TIMEOUT_MS);
+    if (pr <= 0) {
+        LOGI("proxy: connect timeout (daemon never connected) pr=%d", pr);
+        proxy_down();
+        return -ETIMEDOUT;
+    }
+    int c = accept(proxy.listen, NULL, NULL);
+    if (c < 0) {
+        LOGI("proxy: accept failed err=%d", errno);
+        proxy_down();
+        return -errno;
+    }
+    proxy.sock = c;
+    LOGI("proxy: daemon connected sock=%d", proxy.sock);
     return 0;
 }
 
@@ -645,6 +688,10 @@ Java_com_vdrm_consumer_Native_nativeDestroy(JNIEnv *env, jclass clazz, jlong han
     if (c->win) {
         ANativeWindow_release(c->win);
         c->win = NULL;
+    }
+    if (proxy.listen >= 0) {
+        close(proxy.listen);
+        proxy.listen = -1;
     }
     proxy_down();
     LOGI("instance %p destroyed", (void *)c);

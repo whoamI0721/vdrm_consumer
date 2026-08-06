@@ -25,6 +25,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/uio.h>
+#include <sys/un.h>
 
 #include "vdr2_proto.h"
 
@@ -48,36 +49,44 @@ struct vdr2_frame_io { int fd; int pad; unsigned long long seq; };
 
 static int logfd = -1;
 static int ctl_fd = -1;
+static const char *log_path = VDR2_LOG_PATH;
 
 static void log_open(void)
 {
-    logfd = open(VDR2_LOG_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    logfd = open(log_path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (logfd < 0) {
         /* files dir may not exist on a fresh install; create it and retry */
-        const char *slash = strrchr(VDR2_LOG_PATH, '/');
+        const char *slash = strrchr(log_path, '/');
         if (slash) {
             char dir[128];
-            size_t n = (size_t)(slash - VDR2_LOG_PATH);
+            size_t n = (size_t)(slash - log_path);
             if (n < sizeof(dir)) {
-                memcpy(dir, VDR2_LOG_PATH, n);
+                memcpy(dir, log_path, n);
                 dir[n] = '\0';
                 (void)mkdir(dir, 0755);
-                logfd = open(VDR2_LOG_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+                logfd = open(log_path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
             }
         }
+    }
+    if (logfd < 0) {
+        /* the app files dir may not be writable by uid 0; fall back to a
+         * root-writable location for diagnostics */
+        logfd = open("/data/local/tmp/vdr2d.log", O_WRONLY | O_CREAT | O_TRUNC, 0666);
     }
 }
 
 static void dlog(const char *fmt, ...)
 {
-    if (logfd < 0) return;
     char buf[256];
     int n = snprintf(buf, sizeof(buf), "[vdr2d %d] ", getpid());
     va_list ap;
     va_start(ap, fmt);
     n += vsnprintf(buf + n, sizeof(buf) - n, fmt, ap);
     va_end(ap);
-    if (n > 0) (void)write(logfd, buf, (size_t)n);
+    if (n > 0) {
+        if (logfd >= 0) (void)write(logfd, buf, (size_t)n);
+        (void)write(2, buf, (size_t)n);
+    }
 }
 
 static int send_rsp(int sock, long ret, const void *arg, uint32_t arglen,
@@ -115,10 +124,35 @@ static int send_rsp(int sock, long ret, const void *arg, uint32_t arglen,
 int main(int argc, char **argv)
 {
     if (argc < 2) return 1;
-    int sock = atoi(argv[1]);
 
-    log_open();
-    dlog("start sock=%d uid=%d\n", sock, getuid());
+    int sock = -1;
+    if (strcmp(argv[1], "--connect") == 0) {
+        /* vdr2d --connect <sockpath> [logpath]
+         * Named-socket mode: the app bind()s a SOCK_SEQPACKET socket and
+         * accepts; we connect() to it. No fd inheritance required, so this
+         * works through any root executor (su -c, Sui, ...). */
+        if (argc < 3) return 1;
+        if (argc >= 4) log_path = argv[3];
+        log_open();
+        dlog("start connect=%s uid=%d\n", argv[2], getuid());
+        struct sockaddr_un sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sun_family = AF_UNIX;
+        snprintf(sa.sun_path, sizeof(sa.sun_path), "%s", argv[2]);
+        sock = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
+        if (sock < 0) { dlog("socket failed errno=%d\n", errno); return 1; }
+        if (connect(sock, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
+            dlog("connect %s failed errno=%d\n", argv[2], errno);
+            close(sock);
+            return 1;
+        }
+        dlog("connected sock=%d\n", sock);
+    } else {
+        if (argc >= 3) log_path = argv[2];
+        sock = atoi(argv[1]);
+        log_open();
+        dlog("start sock=%d uid=%d\n", sock, getuid());
+    }
 
     ctl_fd = open(VDR2CTL_PATH, O_RDWR);
     if (ctl_fd < 0) {
