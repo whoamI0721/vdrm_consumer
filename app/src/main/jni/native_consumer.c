@@ -185,12 +185,20 @@ static int proxy_spawn(void)
     int pr = poll(&pfd, 1, VDR2_CONNECT_TIMEOUT_MS);
     if (pr <= 0) {
         LOGI("proxy: connect timeout (daemon never connected) pr=%d", pr);
+        if (proxy.child > 0) {
+            kill(proxy.child, SIGKILL);
+            waitpid(proxy.child, NULL, 0);
+        }
         proxy_down();
         return -ETIMEDOUT;
     }
     int c = accept(proxy.listen, NULL, NULL);
     if (c < 0) {
         LOGI("proxy: accept failed err=%d", errno);
+        if (proxy.child > 0) {
+            kill(proxy.child, SIGKILL);
+            waitpid(proxy.child, NULL, 0);
+        }
         proxy_down();
         return -errno;
     }
