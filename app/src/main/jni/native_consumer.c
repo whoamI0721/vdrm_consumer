@@ -539,6 +539,18 @@ static void *render_loop(void *arg)
         int fwait = vdr2_wait_fence();
         if (fwait < 0) {
             LOGI("fence wait failed ret=%d", fwait);
+        } else {
+            struct vdr2_frame_io fo;
+            memset(&fo, 0, sizeof(fo));
+            int frame_fd = -1;
+            int fret = vdr2_proxy_ioctl(VDR2_IOC_FRAME, &fo, sizeof(fo),
+                                        NULL, 0, &frame_fd);
+            if (fret == 0 && frame_fd >= 0) {
+                LOGI("frame: seq=%llu fd=%d", fo.seq, frame_fd);
+                close(frame_fd);
+            } else {
+                LOGE("frame fetch failed ret=%d fd=%d", fret, frame_fd);
+            }
         }
         api.queueBuffer(c->win, anb, -1);
     }
