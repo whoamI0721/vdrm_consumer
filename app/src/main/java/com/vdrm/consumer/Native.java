@@ -7,7 +7,7 @@ public class Native {
 
     public static native long nativeCreate();
     public static native void nativeDestroy(long handle);
-    public static native void nativeStart(long handle, Surface surface);
+    public static native void nativeStart(long handle, Surface surface, String daemonPath);
     public static native void nativeStop(long handle);
 
     /* FD import test: import container-rendered dma-buf and display it.

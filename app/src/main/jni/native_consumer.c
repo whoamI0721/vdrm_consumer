@@ -27,6 +27,7 @@
 #include <sys/wait.h>
 
 #include "anw_hidden.h"
+#include "vdr2_proto.h"
 
 #define TAG "VDRM"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -65,41 +66,190 @@ struct vdr2_reg_io   { int fd, slot, efd; unsigned stride; };
 #define VDR2_EV_MOTION 3
 #define VDR2_EV_SCROLL 4
 
-static int vdr2_fd = -1;
 static int vdr2_bell = -1;
 static int vdr2_bell_registered;
 
-static int vdr2_open(void)
+/* ---- vdr2d root proxy (unix socket + SCM_RIGHTS) ----
+ * untrusted_app cannot open /dev/vdr2ctl. The app spawns the vdr2d daemon
+ * via `su -c "<files>/vdr2d <sockfd>"` (u:r:ksu:s0); the daemon holds the
+ * device fd and runs every guard-booth ioctl. Eventfd / dma-buf arguments
+ * are passed with SCM_RIGHTS, out-fds (AUDIO_*) come back the same way. */
+
+#define VDR2_IOC_NR(cmd) ((cmd) & 0xFF)
+
+struct vdr2_proxy {
+    int sock;
+    pid_t child;
+    char daemon_path[512];
+};
+
+static struct vdr2_proxy proxy = { .sock = -1, .child = -1, .daemon_path = {0} };
+
+static int proxy_down(void)
 {
-    if (vdr2_fd >= 0) return 0;
-    /* Fix permissions: KPM creates device with 600, need 666 for APK access */
-    system("su -c 'chmod 0666 /dev/vdr2ctl 2>/dev/null'");
-    vdr2_fd = open("/dev/vdr2ctl", O_RDWR);
-    if (vdr2_fd < 0) {
-        LOGE("open: open /dev/vdr2ctl failed err=%d", errno);
+    if (proxy.sock >= 0) close(proxy.sock);
+    proxy.sock = -1;
+    if (proxy.child > 0) {
+        waitpid(proxy.child, NULL, WNOHANG);
+        proxy.child = -1;
+    }
+    vdr2_bell_registered = 0;
+    return -EPIPE;
+}
+
+static int proxy_spawn(void)
+{
+    if (proxy.sock >= 0) return 0;
+    if (!proxy.daemon_path[0]) {
+        LOGE("proxy: no daemon path");
+        return -EINVAL;
+    }
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sv) < 0) return -errno;
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(sv[0]);
+        close(sv[1]);
         return -errno;
     }
-    LOGI("open: fd=%d", vdr2_fd);
-    if (vdr2_bell < 0) {
-        vdr2_bell = eventfd(0, EFD_NONBLOCK);
-        LOGI("open: bell=%d", vdr2_bell);
-        if (vdr2_bell < 0) { close(vdr2_fd); vdr2_fd = -1; return -errno; }
+    if (pid == 0) {
+        close(sv[0]);
+        char cmd[600];
+        snprintf(cmd, sizeof(cmd), "%s %d", proxy.daemon_path, sv[1]);
+        execl("/system/bin/su", "su", "-c", cmd, (char *)NULL);
+        _exit(127);
     }
-    LOGI("open: done");
+    close(sv[1]);
+    proxy.sock = sv[0];
+    proxy.child = pid;
+    LOGI("proxy: spawned pid=%d sock=%d", pid, proxy.sock);
     return 0;
 }
 
-static int do_ioctl(int req, void *arg)
+/* One request/response round trip. arg/arglen is the ioctl arg block
+ * (arglen must match the real struct size), fds ride along on SCM_RIGHTS,
+ * outfds receives a fd produced by the ioctl (AUDIO_*, FRAME), -1 if none. */
+static int proxy_exchange(unsigned long cmd, void *arg, size_t arglen,
+                          int *fds, int nfds, int *outfds)
+{
+    int retried = 0;
+retry:
+    if (proxy.sock < 0) {
+        int r = proxy_spawn();
+        if (r < 0) return r;
+    }
+
+    struct vdr2p_msg req;
+    req.magic = VDR2P_MAGIC_REQ;
+    req.cmd = (uint32_t)cmd;
+    req.ret = 0;
+    req.arglen = (uint32_t)arglen;
+    req.nfds = (uint32_t)nfds;
+
+    char cbuf[CMSG_SPACE(sizeof(int) * VDR2P_MAX_FD)] = {0};
+    struct iovec iov[2];
+    iov[0].iov_base = &req;
+    iov[0].iov_len = sizeof(req);
+    iov[1].iov_base = arg;
+    iov[1].iov_len = arglen;
+
+    struct msghdr mh = {0};
+    mh.msg_iov = iov;
+    mh.msg_iovlen = arglen ? 2 : 1;
+    if (nfds > 0) {
+        mh.msg_control = cbuf;
+        mh.msg_controllen = sizeof(cbuf);
+        struct cmsghdr *c = CMSG_FIRSTHDR(&mh);
+        c->cmsg_level = SOL_SOCKET;
+        c->cmsg_type = SCM_RIGHTS;
+        c->cmsg_len = CMSG_LEN(sizeof(int) * (size_t)nfds);
+        memcpy(CMSG_DATA(c), fds, sizeof(int) * (size_t)nfds);
+    }
+    if (sendmsg(proxy.sock, &mh, 0) < 0) {
+        LOGE("proxy: send failed err=%d", errno);
+        proxy_down();
+        if (!retried++) goto retry;
+        return -EPIPE;
+    }
+
+    struct vdr2p_msg rsp;
+    char rarg[VDR2P_MAX_ARG];
+    char rcbuf[CMSG_SPACE(sizeof(int))] = {0};
+    struct iovec riov[2];
+    riov[0].iov_base = &rsp;
+    riov[0].iov_len = sizeof(rsp);
+    riov[1].iov_base = rarg;
+    riov[1].iov_len = sizeof(rarg);
+
+    struct msghdr rmh = {0};
+    rmh.msg_iov = riov;
+    rmh.msg_iovlen = 2;
+    rmh.msg_control = rcbuf;
+    rmh.msg_controllen = sizeof(rcbuf);
+
+    ssize_t n = recvmsg(proxy.sock, &rmh, 0);
+    if (n <= 0) {
+        LOGE("proxy: recv failed n=%zd err=%d", n, errno);
+        proxy_down();
+        if (!retried++) goto retry;
+        return -EPIPE;
+    }
+    if (rsp.magic != VDR2P_MAGIC_RSP) {
+        LOGE("proxy: bad rsp magic 0x%x", rsp.magic);
+        proxy_down();
+        return -EPIPE;
+    }
+    if (outfds) *outfds = -1;
+    if (rsp.nfds) {
+        for (struct cmsghdr *c = CMSG_FIRSTHDR(&rmh); c;
+             c = CMSG_NXTHDR(&rmh, c)) {
+            if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS) {
+                int fd;
+                memcpy(&fd, CMSG_DATA(c), sizeof(int));
+                if (outfds) *outfds = fd;
+                break;
+            }
+        }
+    }
+    if (arglen && rsp.arglen) {
+        size_t cp = rsp.arglen < arglen ? rsp.arglen : arglen;
+        memcpy(arg, rarg, cp);
+    }
+    return (int)rsp.ret;
+}
+
+static int vdr2_open(void)
+{
+    if (proxy.sock >= 0) return 0;
+    int r = proxy_spawn();
+    if (r < 0) {
+        LOGE("open: proxy spawn failed %d", r);
+        return r;
+    }
+    if (vdr2_bell < 0) {
+        vdr2_bell = eventfd(0, EFD_NONBLOCK);
+        LOGI("open: bell=%d", vdr2_bell);
+        if (vdr2_bell < 0) {
+            proxy_down();
+            return -errno;
+        }
+    }
+    return 0;
+}
+
+static int vdr2_proxy_ioctl(unsigned int req, void *arg, size_t arglen,
+                            int *fds, int nfds, int *outfds)
 {
     if (vdr2_open() < 0) return -ENODEV;
     if (!vdr2_bell_registered) {
-        int ret = ioctl(vdr2_fd, VDR2_IOC_BEGIN, NULL);
+        int ret = proxy_exchange(VDR2_IOC_BEGIN, NULL, 0, NULL, 0, NULL);
         LOGI("begin: ret=%d", ret);
-        ret = ioctl(vdr2_fd, VDR2_IOC_PRESENT, &vdr2_bell);
+        ret = proxy_exchange(VDR2_IOC_PRESENT, &vdr2_bell, sizeof(int),
+                             &vdr2_bell, 1, NULL);
         LOGI("present: ret=%d", ret);
         vdr2_bell_registered = 1;
     }
-    return ioctl(vdr2_fd, req, arg);
+    return proxy_exchange(req, arg, arglen, fds, nfds, outfds);
 }
 
 /* ---- Event helpers ---- */
@@ -107,25 +257,25 @@ static int do_ioctl(int req, void *arg)
 static int vdr2_send_key(int code, int down)
 {
     struct vdr2_ev_io e = { VDR2_EV_KEY, code, down ? 1 : 0, 0, 0 };
-    return do_ioctl(VDR2_IOC_EV, &e);
+    return vdr2_proxy_ioctl(VDR2_IOC_EV, &e, sizeof(e), NULL, 0, NULL);
 }
 
 static int vdr2_send_motion(int dx, int dy)
 {
     struct vdr2_ev_io e = { VDR2_EV_MOTION, 0, 0, dx, dy };
-    return do_ioctl(VDR2_IOC_EV, &e);
+    return vdr2_proxy_ioctl(VDR2_IOC_EV, &e, sizeof(e), NULL, 0, NULL);
 }
 
 static int vdr2_send_btn(int btn, int pressed)
 {
     struct vdr2_ev_io e = { VDR2_EV_BUTTON, btn, pressed ? 1 : 0, 0, 0 };
-    return do_ioctl(VDR2_IOC_EV, &e);
+    return vdr2_proxy_ioctl(VDR2_IOC_EV, &e, sizeof(e), NULL, 0, NULL);
 }
 
 static int vdr2_send_scroll(int axis, int val)
 {
     struct vdr2_ev_io e = { VDR2_EV_SCROLL, axis, val, 0, 0 };
-    return do_ioctl(VDR2_IOC_EV, &e);
+    return vdr2_proxy_ioctl(VDR2_IOC_EV, &e, sizeof(e), NULL, 0, NULL);
 }
 
 /* ---- ANativeWindow hidden API ---- */
@@ -162,8 +312,10 @@ static bool api_loaded;
 static int vdrm_submit(int dmabuf_fd, int slot, unsigned stride)
 {
     struct vdr2_reg_io reg = { dmabuf_fd, slot, vdr2_bell, stride };
+    int fds[2] = { dmabuf_fd, vdr2_bell };
     LOGI("submit: slot=%d dmabuf_fd=%d bell=%d stride=%u", slot, dmabuf_fd, vdr2_bell, stride);
-    int ret = do_ioctl(VDR2_IOC_REGISTER_BUF, &reg);
+    int ret = vdr2_proxy_ioctl(VDR2_IOC_REGISTER_BUF, &reg, sizeof(reg),
+                               fds, 2, NULL);
     LOGI("submit: ret=%d", ret);
     return ret;
 }
@@ -171,7 +323,8 @@ static int vdrm_submit(int dmabuf_fd, int slot, unsigned stride)
 static int vdrm_present(void)
 {
     LOGI("present: bell=%d", vdr2_bell);
-    int ret = do_ioctl(VDR2_IOC_PRESENT, &vdr2_bell);
+    int ret = vdr2_proxy_ioctl(VDR2_IOC_PRESENT, &vdr2_bell, sizeof(int),
+                               &vdr2_bell, 1, NULL);
     LOGI("present: ret=%d", ret);
     return ret;
 }
@@ -320,7 +473,7 @@ static void *audio_play_thread(void *arg)
     struct consumer *c = arg;
 
     int fd = -1;
-    int r = do_ioctl(VDR2_IOC_AUDIO_PLAY, &fd);
+    int r = vdr2_proxy_ioctl(VDR2_IOC_AUDIO_PLAY, NULL, 0, NULL, 0, &fd);
     LOGI("audio_play: ioctl ret=%d fd=%d", r, fd);
     if (r < 0 || fd < 0) { LOGE("audio play ioctl failed ret=%d", r); return NULL; }
     c->play_fd = fd;
@@ -366,7 +519,7 @@ static void *audio_cap_thread(void *arg)
     struct consumer *c = arg;
 
     int fd = -1;
-    int r = do_ioctl(VDR2_IOC_AUDIO_CAP, &fd);
+    int r = vdr2_proxy_ioctl(VDR2_IOC_AUDIO_CAP, NULL, 0, NULL, 0, &fd);
     if (r < 0 || fd < 0) { LOGE("audio cap ioctl failed ret=%d", r); return NULL; }
     c->cap_fd = fd;
 
@@ -457,6 +610,8 @@ Java_com_vdrm_consumer_Native_nativeCreate(JNIEnv *env, jclass clazz)
         sa.sa_handler = sighandler_noop;
         sigaction(SIGUSR1, &sa, NULL);
     }
+    /* Socket writes to a dead daemon would kill us via SIGPIPE. */
+    signal(SIGPIPE, SIG_IGN);
 
     LOGI("instance %p created", (void *)c);
     return (jlong)(uintptr_t)c;
@@ -491,15 +646,30 @@ Java_com_vdrm_consumer_Native_nativeDestroy(JNIEnv *env, jclass clazz, jlong han
         ANativeWindow_release(c->win);
         c->win = NULL;
     }
+    proxy_down();
     LOGI("instance %p destroyed", (void *)c);
     free(c);
 }
 
 JNIEXPORT void JNICALL
-Java_com_vdrm_consumer_Native_nativeStart(JNIEnv *env, jclass clazz, jlong handle, jobject surface)
+Java_com_vdrm_consumer_Native_nativeStart(JNIEnv *env, jclass clazz,
+                                          jlong handle, jobject surface,
+                                          jstring daemonPath)
 {
     struct consumer *c = STATE(handle);
     if (!c) return;
+
+    const char *p = daemonPath
+        ? (*env)->GetStringUTFChars(env, daemonPath, NULL) : NULL;
+    if (p) {
+        snprintf(proxy.daemon_path, sizeof(proxy.daemon_path), "%s", p);
+        (*env)->ReleaseStringUTFChars(env, daemonPath, p);
+        LOGI("daemon path: %s", proxy.daemon_path);
+    }
+    if (!proxy.daemon_path[0]) {
+        LOGE("daemon path not set");
+        return;
+    }
 
     if (!api_loaded) {
         if (anw_api_load(&api) < 0) {

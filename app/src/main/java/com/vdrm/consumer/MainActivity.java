@@ -6,6 +6,7 @@ import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.PowerManager;
+import android.util.Log;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.SurfaceHolder;
@@ -14,7 +15,18 @@ import android.view.View;
 import android.view.WindowManager;
 import android.widget.RelativeLayout;
 
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
+
 public class MainActivity extends Activity implements SurfaceHolder.Callback {
+
+    private static final String TAG = "VDRM";
 
     private SurfaceView surfaceView;
     private VirtualTouchpad touchpad;
@@ -118,10 +130,80 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     @Override
     public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
         keyboardView.setScreenSize(width, height);
-        Native.nativeStart(nativeHandle, holder.getSurface());
+        String daemonPath = ensureDaemon();
+        if (daemonPath != null) {
+            Native.nativeStart(nativeHandle, holder.getSurface(), daemonPath);
+        } else {
+            Log.e(TAG, "vdr2d daemon not available");
+        }
         // FD import test mode (verifies container GPU -> screen pipeline).
         // Native.nativeTestFd(holder.getSurface());
         Native.nativeStartAudio(nativeHandle);
+    }
+
+    /* Extract the vdr2d root proxy into our files dir so `su -c` can exec it
+     * (runs in u:r:ksu:s0, which may open /dev/vdr2ctl). Native libs may be
+     * packed inside the APK (extractNativeLibs=false), so fall back to
+     * reading the zip entry directly. */
+    private String ensureDaemon() {
+        try {
+            File dst = new File(getFilesDir(), "vdr2d");
+            if (dst.exists() && dst.length() > 0) {
+                return dst.getAbsolutePath();
+            }
+            File src = new File(getApplicationInfo().nativeLibraryDir, "libvdr2d.so");
+            if (src.exists()) {
+                copyTo(src, dst);
+                Log.i(TAG, "vdr2d extracted from nativeLibraryDir");
+            } else {
+                extractFromApk(dst);
+                Log.i(TAG, "vdr2d extracted from apk lib entry");
+            }
+            if (!dst.setExecutable(true, false)) {
+                Log.e(TAG, "chmod +x failed for " + dst);
+            }
+            return dst.getAbsolutePath();
+        } catch (IOException e) {
+            Log.e(TAG, "ensureDaemon failed", e);
+            return null;
+        }
+    }
+
+    private void copyTo(File src, File dst) throws IOException {
+        InputStream in = new FileInputStream(src);
+        try {
+            writeTo(in, dst);
+        } finally {
+            in.close();
+        }
+    }
+
+    private void extractFromApk(File dst) throws IOException {
+        String entry = "lib/" + Build.SUPPORTED_ABIS[0] + "/libvdr2d.so";
+        ZipFile zf = new ZipFile(getApplicationInfo().sourceDir);
+        try {
+            ZipEntry e = zf.getEntry(entry);
+            if (e == null) throw new IOException("no " + entry + " in apk");
+            InputStream in = zf.getInputStream(e);
+            try {
+                writeTo(in, dst);
+            } finally {
+                in.close();
+            }
+        } finally {
+            zf.close();
+        }
+    }
+
+    private void writeTo(InputStream in, File dst) throws IOException {
+        OutputStream out = new FileOutputStream(dst);
+        try {
+            byte[] buf = new byte[65536];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+        } finally {
+            out.close();
+        }
     }
 
     @Override
