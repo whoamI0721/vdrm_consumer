@@ -35,17 +35,20 @@
 #define VDR2_IOC(cmd) ((cmd) & 0xFF)
 
 #define VDR2_NR_BEGIN          0
-#define VDR2_NR_PRESENT        1
-#define VDR2_NR_FRAME          2
-#define VDR2_NR_REGISTER_BUF   3
-#define VDR2_NR_CLEAR_BUFS     4
-#define VDR2_NR_EV             5
-#define VDR2_NR_AUDIO_PLAY     6
-#define VDR2_NR_AUDIO_CAP      7
+#define VDR2_NR_PRESENT         1
+#define VDR2_NR_FRAME           2
+#define VDR2_NR_REGISTER_BUF    3
+#define VDR2_NR_CLEAR_BUFS      4
+#define VDR2_NR_EV              5
+#define VDR2_NR_AUDIO_PLAY      6
+#define VDR2_NR_AUDIO_CAP       7
 #define VDR2_NR_AUDIO_PLAY_RECV 8
-#define VDR2_NR_AUDIO_CAP_RECV 9
+#define VDR2_NR_AUDIO_CAP_RECV  9
+#define VDR2_NR_CHANNELS       10   /* V3 */
+#define VDR2_NR_FENCE          11   /* V3: GET_FENCE */
+#define VDR2_NR_CLEAR          12   /* V3: directed clear */
 
-struct vdr2_frame_io { int fd; int pad; unsigned long long seq; };
+struct vdr2_frame_io { int fd; int slot; unsigned long long seq; };
 
 static int logfd = -1;
 static int ctl_fd = -1;
@@ -172,6 +175,7 @@ int main(int argc, char **argv)
     for (;;) {
         struct vdr2p_msg req;
         char cbuf[CMSG_SPACE(sizeof(int) * VDR2P_MAX_FD)] = {0};
+        memset(arg.b, 0, sizeof(arg.b));
         struct iovec iov[2];
         iov[0].iov_base = &req;
         iov[0].iov_len = sizeof(req);
@@ -227,12 +231,33 @@ int main(int argc, char **argv)
             break;
         }
         case VDR2_NR_FRAME:
-            /* out: struct vdr2_frame_io { fd, pad, seq } — fd back via SCM_RIGHTS */
+            /* out: struct vdr2_frame_io { fd, slot, seq } — fd back via SCM_RIGHTS */
             ret = ioctl(ctl_fd, (unsigned long)req.cmd, arg.b);
             if (ret == 0) {
                 memcpy(&out_fd, arg.b, sizeof(int));
                 outlen = sizeof(struct vdr2_frame_io);
             }
+            break;
+        case VDR2_NR_FENCE:
+            /* V3 GET_FENCE — twin of FRAME: out is a struct vdr2_frame_io,
+             * fd comes back via SCM_RIGHTS. */
+            ret = ioctl(ctl_fd, (unsigned long)req.cmd, arg.b);
+            if (ret == 0) {
+                memcpy(&out_fd, arg.b, sizeof(int));
+                outlen = sizeof(struct vdr2_frame_io);
+            }
+            break;
+        case VDR2_NR_CHANNELS: {
+            /* V3 REGISTER_CHANNELS: struct vdr2_ch_io { shm, bell, fence, w, h }
+             * three fds land at offsets 0/4/8. */
+            memcpy(arg.b + 0, &fds[0], sizeof(int));
+            if (nfds > 1) memcpy(arg.b + 4, &fds[1], sizeof(int));
+            if (nfds > 2) memcpy(arg.b + 8, &fds[2], sizeof(int));
+            ret = ioctl(ctl_fd, (unsigned long)req.cmd, arg.b);
+            break;
+        }
+        case VDR2_NR_CLEAR:
+            ret = ioctl(ctl_fd, (unsigned long)req.cmd, NULL);
             break;
         case VDR2_NR_AUDIO_PLAY:
         case VDR2_NR_AUDIO_CAP:

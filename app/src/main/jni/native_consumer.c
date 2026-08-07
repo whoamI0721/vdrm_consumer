@@ -44,9 +44,30 @@
 #define VDR2_IOC_WRITE 1
 #define VDR2_IOC_READ 2
 
-struct vdr2_frame_io { int fd; int pad; unsigned long long seq; };
+struct vdr2_frame_io { int fd; int slot; unsigned long long seq; };
 struct vdr2_ev_io    { int type, code, value, x, y; };
 struct vdr2_reg_io   { int fd, slot, efd; unsigned stride; };
+
+/* ---- V4 slot protocol ----
+ * Our zero-copy path is: REGISTER_BUF (lend ANativeWindow buffers to the
+ * KPM) + FRAME.slot (ask which buffer the container just flipped into). The
+ * V3 REGISTER_CHANNELS / GET_FENCE / CLEAR ioctls below are kept for future
+ * anland alignment but not actively driven by the current render loop.
+ */
+struct vdr3_shm_page {
+    unsigned long long seq;
+    unsigned int fb_id;
+    unsigned int width, height;
+    int consumer_state;
+    unsigned int current_fence;
+    unsigned int pad;
+};
+struct vdr2_ch_io {
+    int shm_fd;
+    int bell_fd;
+    int fence_fd;
+    unsigned int width, height;
+};
 
 #define VDR2_IOC(cmd)        ((cmd) & 0xFF)
 #define VDR2_IOC_BEGIN          (0x56u << 8 | 0)
@@ -59,6 +80,9 @@ struct vdr2_reg_io   { int fd, slot, efd; unsigned stride; };
 #define VDR2_IOC_AUDIO_CAP      (VDR2_IOC_READ  << 30 | 0x56u << 8 | 7 | sizeof(int) << 16)
 #define VDR2_IOC_AUDIO_PLAY_RECV (VDR2_IOC_READ << 30 | 0x56u << 8 | 8 | sizeof(int) << 16)
 #define VDR2_IOC_AUDIO_CAP_RECV  (VDR2_IOC_READ << 30 | 0x56u << 8 | 9 | sizeof(int) << 16)
+#define VDR2_IOC_CHANNELS        (VDR2_IOC_WRITE << 30 | 0x56u << 8 | 10 | sizeof(struct vdr2_ch_io) << 16)
+#define VDR2_IOC_FENCE           (VDR2_IOC_READ  << 30 | 0x56u << 8 | 11 | sizeof(struct vdr2_frame_io) << 16)
+#define VDR2_IOC_CLEAR           (0x56u << 8 | 12)
 
 /* Event types (must match KPM) */
 #define VDR2_EV_KEY    1
@@ -364,6 +388,7 @@ static int vdr2_send_scroll(int axis, int val)
 struct buf_info {
     ANativeWindowBuffer *anb;
     int idx;
+    int slot;
 };
 
 struct consumer {
@@ -401,6 +426,7 @@ static int vdrm_submit(int dmabuf_fd, int slot, unsigned stride)
     return ret;
 }
 
+__attribute__((unused))
 static int vdrm_present(void)
 {
     LOGI("present: bell=%d", vdr2_bell);
@@ -423,10 +449,27 @@ static int vdr2_wait_fence(void)
     return 0;
 }
 
+/* Ask the KPM which APK slot the last flip rendered into. Returns the slot
+ * index, or -1 if no frame is available yet. */
+static int vdr2_frame_slot(void)
+{
+    struct vdr2_frame_io fo;
+    memset(&fo, 0, sizeof(fo));
+    int frame_fd = -1;
+    int ret = vdr2_proxy_ioctl(VDR2_IOC_FRAME, &fo, sizeof(fo),
+                               NULL, 0, &frame_fd);
+    if (frame_fd >= 0) close(frame_fd);
+    if (ret < 0) return -1;
+    return fo.slot;
+}
+
 static int collect_buffers(struct consumer *c)
 {
     ANativeWindow *win = c->win;
-    int target = c->buf_count;
+    /* 1:1 slot mapping: register exactly VDR2_SLOTS buffers, one per KPM slot.
+     * Using more would overwrite earlier slots (found % VDR2_SLOTS) and break
+     * the FRAME.slot -> buffer association. */
+    int target = VDR2_SLOTS;
     int found = 0;
 
     LOGI("collecting %d buffers", target);
@@ -469,7 +512,8 @@ static int collect_buffers(struct consumer *c)
         if (is_dup) continue;
         if (submit_fd < 0) continue;
 
-        int ret = vdrm_submit(submit_fd, found % VDR2_SLOTS, anb->stride);
+        int slot = found;
+        int ret = vdrm_submit(submit_fd, slot, anb->stride);
         close(submit_fd);
         if (ret < 0) {
             LOGE("submit failed fd=%d ret=%d", fd, ret);
@@ -478,8 +522,9 @@ static int collect_buffers(struct consumer *c)
 
         c->bufs[found].anb = anb;
         c->bufs[found].idx = found;
-        LOGI("  buf[%d]: anb=%p fd=%d %dx%d stride=%d idx=%d",
-             found, (void *)anb, fd, anb->width, anb->height, anb->stride, found);
+        c->bufs[found].slot = slot;
+        LOGI("  buf[%d]: anb=%p fd=%d %dx%d stride=%d slot=%d",
+             found, (void *)anb, fd, anb->width, anb->height, anb->stride, slot);
         found++;
     }
 
@@ -493,66 +538,58 @@ static int collect_buffers(struct consumer *c)
     return 0;
 }
 
+/* Return the slot index for a given ANativeWindowBuffer, or -1 if unknown. */
+static int buf_slot(struct consumer *c, ANativeWindowBuffer *anb)
+{
+    for (int i = 0; i < c->buf_count; i++)
+        if (c->bufs[i].anb == anb) return c->bufs[i].slot;
+    return -1;
+}
+
 static void *render_loop(void *arg)
 {
     struct consumer *c = arg;
     LOGI("render loop started");
 
     while (c->running) {
-        ANativeWindowBuffer *anb = NULL;
-        int fence = -1;
-        fence = -1;
-        int dq_ret = api.dequeueBuffer(c->win, &anb, &fence);
-        if (dq_ret != 0 || !anb) {
-            LOGE("render dequeue failed ret=%d err=%s", dq_ret, strerror(-dq_ret));
-            usleep(16000);
-            continue;
-        }
-
-        if (fence >= 0) {
-            struct pollfd pfd = { .fd = fence, .events = POLLIN };
-            poll(&pfd, 1, 1000);
-            close(fence);
-        }
-
-        int idx = -1;
-        for (int i = 0; i < c->buf_count; i++) {
-            if (c->bufs[i].anb == anb) { idx = i; break; }
-        }
-
-        if (idx < 0) {
-            api.queueBuffer(c->win, anb, -1);
-            usleep(16000);
-            continue;
-        }
-
-        int ret = vdrm_present();
-        if (ret < 0) {
-            if (ret == -EINTR) {
-                LOGI("present interrupted by signal");
-                c->running = false;
-            }
-            api.queueBuffer(c->win, anb, -1);
-            continue;
-        }
-
+        /* Wait for the container to finish a flip. */
         int fwait = vdr2_wait_fence();
         if (fwait < 0) {
             LOGI("fence wait failed ret=%d", fwait);
-        } else {
-            struct vdr2_frame_io fo;
-            memset(&fo, 0, sizeof(fo));
-            int frame_fd = -1;
-            int fret = vdr2_proxy_ioctl(VDR2_IOC_FRAME, &fo, sizeof(fo),
-                                        NULL, 0, &frame_fd);
-            if (fret == 0 && frame_fd >= 0) {
-                LOGI("frame: seq=%llu fd=%d", fo.seq, frame_fd);
-                close(frame_fd);
-            } else {
-                LOGE("frame fetch failed ret=%d fd=%d", fret, frame_fd);
-            }
+            usleep(16000);
+            continue;
         }
-        api.queueBuffer(c->win, anb, -1);
+
+        /* Ask the KPM which slot was flipped. */
+        int target_slot = vdr2_frame_slot();
+        if (target_slot < 0) {
+            LOGI("frame slot unavailable");
+            continue;
+        }
+
+        /* Dequeue until we get the buffer that belongs to the flipped slot.
+         * The right one is guaranteed to be in the pool since the container
+         * rendered into a registered slot buffer. */
+        for (int retries = 0; retries < VDR2_SLOTS * 2; retries++) {
+            ANativeWindowBuffer *anb = NULL;
+            int fence = -1;
+            int dq_ret = api.dequeueBuffer(c->win, &anb, &fence);
+            if (dq_ret != 0 || !anb) {
+                LOGE("dequeue failed ret=%d", dq_ret);
+                usleep(16000);
+                continue;
+            }
+            if (fence >= 0) {
+                struct pollfd pfd = { .fd = fence, .events = POLLIN };
+                poll(&pfd, 1, 1000);
+                close(fence);
+            }
+            if (buf_slot(c, anb) == target_slot) {
+                api.queueBuffer(c->win, anb, -1);
+                break;
+            }
+            api.cancelBuffer(c->win, anb, -1);
+        }
     }
 
     LOGI("render loop stopped");
@@ -802,8 +839,10 @@ Java_com_vdrm_consumer_Native_nativeStart(JNIEnv *env, jclass clazz,
 
     int min_ud = 0;
     api.query(c->win, ANATIVEWINDOW_QUERY_MIN_UNDEQUEUED_BUFFERS, &min_ud);
-    c->buf_count = min_ud + 2;
-    if (c->buf_count > MAX_BUFS) c->buf_count = MAX_BUFS;
+    /* Use VDR2_SLOTS for a 1:1 slot→buffer mapping. The KPM only has
+     * VDR2_SLOTS slots, so registering more wastes buffers and breaks
+     * the FRAME.slot association. */
+    c->buf_count = VDR2_SLOTS;
 
     /* Sanity check: can we lock/unlock (public API)? */
     ANativeWindow_Buffer buf;
